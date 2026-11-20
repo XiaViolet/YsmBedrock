@@ -137,19 +137,51 @@ void run(fs::path const& root){
     check(chunks[{"Alice","Host",a.digest}]==expected && chunks[{"Host","Bea",a.digest}]==expected,"incorrect host redistribution");
     std::cout<<"PASS unchanged A archive "<<a.digest<<" in "<<expected<<" chunks A->host and "<<expected<<" chunks host->B. "
         <<"Six remote-ready paths passed disk SHA, ModelPack::loadRoom, texture and presentation identity checks.\n";
-    auto cfg=nodes[0].root/"room-sync.json";auto j=Json::parse(std::ifstream(cfg));
-    j["denied_content_keys"]={a.key};std::ofstream(cfg)<<j.dump();
-    nodes[0].sync.command("reload");
+    auto cfg=nodes[0].root/"room-sync.json";
+    nodes[0].sync.command("deny:"+a.key);
     until([&]{
         auto h=nodes[0].sync.view(),g=nodes[2].sync.view(),owner=nodes[1].sync.view();
         return h && g && owner && h->peerStates.contains("Alice") && g->peerStates.contains("Alice")
             && !h->frame.players.contains("Alice") && !g->frame.players.contains("Alice")
-            && !g->ready.contains(a.key) && !owner->frame.approved;
+            && !g->ready.contains(a.key) && !owner->frame.approved
+            && h->deniedModels.contains(a.key) && !h->deniedModels.at(a.key).empty()
+            && g->deniedModels.empty();
     },"policy revocation despite previously committed model");
     auto before=chunks;
-    j["denied_content_keys"]=Json::array();std::ofstream(cfg)<<j.dump();nodes[0].sync.command("reload");
+    nodes[2].sync.command("allow:"+a.key);
+    nodes[0].sync.command("reload");
+    check(Json::parse(std::ifstream(cfg)).at("denied_content_keys")==Json::array({a.key}),"host denial not saved");
+    queues["Host"].push_back({RoomWireKind::Left,"Alice",{}});
+    queues["Alice"].push_back({RoomWireKind::Left,std::string(roomHostPeer),{}});
+    until([&]{auto h=nodes[0].sync.view();return h && !h->peerStates.contains("Alice")
+        && h->deniedModels.contains(a.key) && nodes[1].sync.view() && !nodes[1].sync.view()->connected;},
+        "host retains undo after wearer leaves");
+    nodes[0].sync.command("allow:"+a.key);
+    until([&]{return nodes[0].sync.view()->deniedModels.empty();},"host restores an offline model");
+    check(Json::parse(std::ifstream(cfg)).at("denied_content_keys").empty(),"allow not persisted");
+    join("Alice");
     until(allReady,"restore allowed view from valid cache");
     check(chunks==before,"duplicate transfer after reauthorization");
+    nodes[0].sync.command("deny:"+a.key);
+    until([&]{return !nodes[0].sync.view()->frame.players.contains("Alice") && !nodes[2].sync.view()->frame.players.contains("Alice");},"second live refusal");
+    nodes[0].sync.command("allow:"+a.key);
+    until(allReady,"live undo with all wearers still in the room");
+    check(chunks==before,"live undo downloaded again");
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        auto prior = nodes[2].sync.view()->frame.players.at("Alice").session;
+        queues["Host"].push_back({RoomWireKind::Left, "Alice", {}});
+        queues["Alice"].push_back({RoomWireKind::Left, std::string(roomHostPeer), {}});
+        until([&] {
+            auto h = nodes[0].sync.view(), b = nodes[2].sync.view(), guest = nodes[1].sync.view();
+            return h && b && guest && !guest->connected && !h->frame.players.contains("Alice")
+                && !b->frame.players.contains("Alice") && b->frame.players.contains("Host");
+        }, "one guest leaves while other guest stays");
+        join("Alice");
+        until([&] { return allReady() && nodes[2].sync.view()->frame.players.at("Alice").session != prior; },
+              "remaining guest reacquires the rejoining wearer and their current state");
+        check(chunks == before, "rejoining guest caused redundant transfers");
+    }
+    std::cout << "PASS same guest rejoined the live room twice; remaining guest rebound the new wearer session; no repeat file chunks.\n";
     for(auto const& id:{"Alice","Bea"}){
         queues["Host"].push_back({RoomWireKind::Left,id,{}});
         queues[id].push_back({RoomWireKind::Left,std::string(roomHostPeer),{}});

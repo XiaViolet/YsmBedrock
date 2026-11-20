@@ -1,0 +1,20 @@
+format = 4
+id = "github.com/XiaViolet/YsmBedrock"
+version = "0.29.24"
+
+[info]
+name = "YsmBedrock"
+description = "Yes Steve Model 的非官方基岩版 Windows 移植，支持 YSM 模型、动画和房间模型同步。"
+tags = ["utility"]
+
+[[variants.""]]
+side = "client"
+platform = "win-x64"
+
+[variants."".deps]
+# 26.60.8 is the tested release with a Windows client entry under the default variant.
+"github.com/LiteLDev/LeviLamina" = "26.60.8"
+
+[[variants."".assets]]
+type = "mcmod"
+urls = ["https://{{id}}/releases/download/v{{version}}/YsmBedrock-{{version}}.mcmod"]

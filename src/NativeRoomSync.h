@@ -9,6 +9,7 @@ struct RoomView {
     std::map<std::string,std::filesystem::path> ready;
     std::map<std::string,std::string> states, peerStates;
     std::vector<RoomOffer> offers;
+    std::map<std::string,std::string> deniedModels;
     std::string message;
     bool connected{}, autoReceive=true;
     std::uint64_t acceptedTxBytes{}, receivedBytes{};

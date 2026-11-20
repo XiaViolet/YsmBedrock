@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -83,6 +84,16 @@ struct GuestProbe {
         if (h.op != Op::Ready || !pair.matches(h)) return false;
         ready = true;
         return true;
+    }
+};
+
+// Bound an incomplete round trip as well as an established session. A repeated
+// ACK alone is not proof that the pinned endpoint still reaches the host.
+struct ProbeDeadline {
+    using Clock = std::chrono::steady_clock;
+    std::optional<Clock::time_point> since;
+    bool expired(Clock::time_point now, bool ready) const {
+        return since && now - *since >= std::chrono::seconds(ready ? 20 : 5);
     }
 };
 

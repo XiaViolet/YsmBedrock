@@ -400,8 +400,9 @@ UiScene YsmUi::draw(float width,float height, float hotbarTop) {
             if(host)button({cx+424,top,220,30},data.room.value("auto_receive",true)?"自动接收当前模型 · 开":"自动接收当前模型 · 关","room:toggle-auto");
             else p.text(cx+430,top+9,287,active?"已连接房主":"等待兼容的房间连接",muted,.85f);
             auto offers=data.room.value("offers",Json::array());
+            auto denied=host?data.room.value("denied",Json::array()):Json::array();
             constexpr std::size_t rows=5;
-            auto count=data.players.size()+offers.size();
+            auto count=data.players.size()+denied.size()+offers.size();
             auto pages=std::max<std::size_t>(1,(count+rows-1)/rows);
             playerPage%=pages;
             std::string notice=str(data.room,"message");
@@ -412,12 +413,18 @@ UiScene YsmUi::draw(float width,float height, float hotbarTop) {
                 p.border({cx,y,cw,42},edge,white,7);
                 if(index<data.players.size()){
                     auto const& peer=data.players[index];auto hidden=peer.value("hidden",false);
-                    p.text(cx+16,y+13,480,fit(str(peer,"name")+"  ·  "+str(peer,"state"),480,1),ink,1);
+                    p.text(cx+16,y+13,cw-275,fit(str(peer,"name")+"  ·  "+str(peer,"state"),cw-275,1),ink,1);
                     auto key=str(peer,"key");
                     if(host && !key.empty())button({cx+cw-255,y+6,110,30},"拒绝此模型","room:deny:"+key);
-                    button({cx+cw-137,y+6,121,30},hidden?"显示模型":"屏蔽模型","peer:"+str(peer,"id"),hidden);
+                    button({cx+cw-137,y+6,121,30},hidden?"本机显示":"本机屏蔽","peer:"+str(peer,"id"),hidden);
+                }else if(index<data.players.size()+denied.size()){
+                    auto const& model=denied[index-data.players.size()];
+                    auto key=str(model,"key"),title=str(model,"title");
+                    auto label="房间已拒绝 · "+(title.empty()?std::string{}:title+" · ")+key.substr(7,12);
+                    p.text(cx+16,y+13,cw-168,fit(label,cw-168,1),ink,1);
+                    button({cx+cw-137,y+6,121,30},"重新允许","room:allow:"+key);
                 }else{
-                    auto const& offer=offers[index-data.players.size()];
+                    auto const& offer=offers[index-data.players.size()-denied.size()];
                     p.text(cx+16,y+13,480,fit(str(offer,"title"),480,1),ink,1);
                     button({cx+cw-137,y+6,121,30},"接收分享","room:offer:"+str(offer,"key"));
                 }

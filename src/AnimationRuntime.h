@@ -55,6 +55,7 @@ public:
     RelayPose outgoingPose(std::uint64_t& eventSequence, bool takeEvents);
     void applyPeerPose(RelayPose const& peer, std::uint64_t& eventCursor, bool replaceAction, Player const& actor);
     void remoteFrame();
+    bool hasWorldBodyPose() const;
     Json modelUiValues() const;
     bool modelUiAction(std::string const& route, double value, int label = -1);
     void setPaused(bool paused);

@@ -685,6 +685,20 @@ void RoomProtocol::share(std::vector<RelayAsset> assets){
     if(impl->host)impl->rebuild();
     else if(impl->online)impl->send("","offers",{{"t","offers"},{"assets",list(impl->shared)}});
 }
+std::map<std::string,std::string> RoomProtocol::deniedModels() const {
+    std::map<std::string,std::string> result;
+    if (!impl->host || impl->rules.deniedKeys.empty()) return result;
+    for (auto const& k : impl->rules.deniedKeys) result.emplace(k, "");
+    auto label = [&](RelayAsset const& asset) {
+        auto it = result.find(asset.contentKey);
+        if (it != result.end() && it->second.empty()) it->second = asset.title;
+    };
+    if (impl->local.current) label(*impl->local.current);
+    for (auto const& [_, member] : impl->members) if (member.current) label(*member.current);
+    for (auto const& [_, asset] : impl->shared) label(asset);
+    for (auto const& [_, asset] : impl->accepted) label(asset);
+    return result;
+}
 std::vector<RoomOffer> RoomProtocol::offers() const{
     std::vector<RoomOffer> out;
     for(auto const& [id,m]:impl->members)for(auto const& [_,a]:m.offers)out.push_back({id,a});

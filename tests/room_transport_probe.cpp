@@ -45,6 +45,17 @@ int main() {
     auto fresh = connect(hostForA, 5, 6);
     require(!hostForA.live.matches(old.make(Op::Data)) && hostForA.live.matches(fresh.pair.make(Op::Data)), "late data cannot apply to rejoin");
     require(!fresh.ack(old.make(Op::Ack)), "late ACK cannot alter new session");
+    ProbeDeadline timer;
+    auto start = ProbeDeadline::Clock::time_point{};
+    using namespace std::chrono_literals;
+    require(!timer.expired(start + 1h, false), "an unsent HELLO has no handshake deadline");
+    timer.since = start;
+    require(!timer.expired(start + 4s, false) && timer.expired(start + 5s, false),
+        "an ACK with no READY must release its provisional endpoint");
+    auto renewed = connect(hostForA, 7, 8);
+    require(!renewed.finish(fresh.pair.make(Op::Ready)), "stale READY cannot complete a renewed attempt");
+    require(!timer.expired(start + 19s, true) && timer.expired(start + 20s, true),
+        "established sessions retain the longer heartbeat deadline");
     require(!HostProbe{}.hello({Op::Hello, number(8), {}}, [] { return Nonce{}; }), "RNG failure must fail closed");
 
     auto head = encode(fresh.pair.make(Op::Data));

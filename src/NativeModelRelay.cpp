@@ -32,7 +32,7 @@ struct InstalledPeer {
     SkinRuntime skin;
     std::shared_ptr<ModelPack const> model;
     std::uint64_t actionSerial{}, eventCursor{}, lastSerial{};
-    bool applied = false;
+    bool worldPoseReported = false;
 };
 struct Candidate {
     std::shared_ptr<ModelPack const> model;
@@ -100,6 +100,7 @@ struct NativeModelRelay::Impl {
     struct PreparationFailure {std::string stream,digest,reason;std::int64_t actor{};unsigned count{};};
     std::map<std::string,PreparationFailure> failures;
     std::string error;
+    bool endpointsConfirmed = false;
     bool hideOthers = false;
     bool measure{};
     std::mutex frameTimesMutex;
@@ -141,9 +142,13 @@ struct NativeModelRelay::Impl {
         return found == map->actors.end() || !actor || found->second->actorId!=actor->getOrCreateUniqueID().rawID ? nullptr : found->second;
     }
     void status() const {
-        if (!transport && !native && error.empty()) return;
-        std::ofstream(root / "relay-status.json") << Json{{"connected", lastReply != Clock::time_point{}},
-            {"local_model_approved", latest.approved}, {"visible_remote_models", peers.size()},
+        if (root.empty()) return;
+        auto connected = native ? endpointsConfirmed && view && view->connected : lastReply != Clock::time_point{};
+        auto posed = std::count_if(peers.begin(), peers.end(), [](auto const& entry) { return entry.second->worldPoseReported; });
+        std::ofstream(root / "relay-status.json") << Json{{"connected", connected},
+            {"role", native ? (room.host() ? "host" : "guest") : (level ? "external" : "none")},
+            {"native_peer_confirmed", endpointsConfirmed}, {"remote_player_states", latest.players.size()},
+            {"local_model_approved", latest.approved}, {"bound_remote_models", peers.size()}, {"visible_remote_models", posed},
             {"available_models", latest.assets.size()}, {"last_error", error}}.dump(2);
     }
     void terminate(IClientInstance* client) {
@@ -169,6 +174,7 @@ struct NativeModelRelay::Impl {
         outgoingModel.clear();
         outgoingEvents.clear();
         latest = {};
+        endpointsConfirmed = false;
         lastReply = {};
         nextPoll = {};
         queue = {};
@@ -199,7 +205,10 @@ Json NativeModelRelay::roomInfo() const {
     auto view=impl->view;
     Json offers=Json::array();
     if(view)for(auto const& o:view->offers)offers.push_back({{"key",o.peer+"|"+o.asset.contentKey},{"title",o.asset.title}});
-    return {{"host",impl->room.host()},{"active",view && view->connected},{"auto_receive",!view || view->autoReceive},{"message",view?view->message:impl->error},{"offers",std::move(offers)}};
+    Json denied=Json::array();
+    if(view && impl->room.host())for(auto const& [key,title]:view->deniedModels)
+        denied.push_back({{"key",key},{"title",title}});
+    return {{"host",impl->room.host()},{"active",view && view->connected},{"auto_receive",!view || view->autoReceive},{"message",view?view->message:impl->error},{"offers",std::move(offers)},{"denied",std::move(denied)}};
 }
 void NativeModelRelay::boundary() {
     impl->left=true;impl->trackVisibility=false;
@@ -263,7 +272,8 @@ Json NativeModelRelay::playerRows(Player const* local) const {
     };
     for(auto const& [id,pose]:impl->latest.players){
         std::string state="等待模型";
-        if(impl->peers.contains(id))state="已显示";
+        if(impl->hides(id))state="已屏蔽";
+        else if(auto it=impl->peers.find(id);it!=impl->peers.end())state=it->second->worldPoseReported?"已显示":"等待角色绘制";
         else if(impl->preparation.valid() && impl->preparing.xuid==id)state="正在准备模型";
         else if(auto failed=impl->failures.find(id);failed!=impl->failures.end() && failed->second.stream==pose.session)
             state="准备失败 · "+failed->second.reason;
@@ -327,10 +337,17 @@ void NativeModelRelay::tick(IClientInstance& client, Player* player, ModelPack c
     }
     auto hasEndpoints = !useNative || data.room.hasEndpoints();
     if(useNative){
+        bool changed = data.endpointsConfirmed != hasEndpoints;
+        data.endpointsConfirmed = hasEndpoints;
         if(data.view!=roomView){
+            bool wasConnected=data.view && data.view->connected;
+            changed |= !data.view || !roomView || data.latest.players.size() != roomView->frame.players.size()
+                || data.latest.assets.size() != roomView->frame.assets.size();
             data.view=std::move(roomView);
             data.latest=data.view ? data.view->frame : RelayFrame{};
+            changed |= wasConnected!=static_cast<bool>(data.view && data.view->connected);
         }
+        if(changed)data.status();
         data.sample(now);
         data.trackVisibility = data.measure || (hasEndpoints && !data.latest.players.empty());
     }
@@ -392,6 +409,7 @@ void NativeModelRelay::tick(IClientInstance& client, Player* player, ModelPack c
             || !data.latest.assets.contains(entry->contentKey) || data.latest.assets.at(entry->contentKey).digest!=entry->digest) {
             it = data.peers.erase(it);
             data.publishPeers();
+            data.status();
             if (actor && actor == entry->actor && actor->getOrCreateUniqueID().rawID==entry->actorId) {
                 entry->animation.detach(*actor);
                 try { entry->skin.restore(client, *actor); }
@@ -401,6 +419,12 @@ void NativeModelRelay::tick(IClientInstance& client, Player* player, ModelPack c
                 entry->skin.reset();
             }
         } else {
+            // The native skin system may rebuild this component after publication.
+            entry->animation.attach(*actor);
+            if (!entry->worldPoseReported && entry->animation.hasWorldBodyPose()) {
+                entry->worldPoseReported = true;
+                data.status();
+            }
             auto const& state = found->second;
             if (entry->lastSerial != state.serial || (!state.events.empty() && state.events.back().sequence > entry->eventCursor)) {
                 entry->shoulderBirds.store(state.shoulderBirds);
@@ -438,13 +462,14 @@ void NativeModelRelay::tick(IClientInstance& client, Player* player, ModelPack c
                 if(data.native && !current.events.empty())entry->eventCursor=std::max(entry->eventCursor,current.events.back().sequence);
                 data.publishPeers(entry);
                 try {
+                    entry->animation.attach(*actor);
+                    entry->animation.applyPeerPose(current, entry->eventCursor, true, *actor);
                     entry->skin.apply(client, *actor, *candidate.model, entry->xuid, entry->animation.skinGeometry());
                     entry->animation.setRenderTexture(entry->skin.renderTexture(), entry->skin.textureName());
                     entry->animation.attach(*actor);
                     entry->model=std::move(candidate.model);
-                    entry->animation.applyPeerPose(current, entry->eventCursor, true, *actor);
                     data.delivered[entry->xuid] = {entry->session, entry->contentKey, entry->eventCursor};
-                    entry->applied = true;data.failures.erase(entry->xuid);
+                    data.failures.erase(entry->xuid);
                     data.peers.emplace(entry->xuid,entry);data.publishPeers();
                     data.decoded[{entry->digest,entry->texture}]=entry->model;
                 } catch (...) {
@@ -496,7 +521,8 @@ void NativeModelRelay::tick(IClientInstance& client, Player* player, ModelPack c
     std::erase_if(data.decoded,[](auto const& item){return item.second.expired();});
     auto existing=data.decoded[{asset.digest,pending->texture}].lock();
     auto path=data.native?data.view->ready.at(pending->contentKey):std::filesystem::path{};
-    data.preparation = std::async(std::launch::async, [relay=data.transport,asset,cache,path,existing,texture=pending->texture] {
+    auto trace = data.measure ? data.root / "room-diagnostics" / std::to_string(data.preparingActor) / "animation-status.json" : std::filesystem::path{};
+    data.preparation = std::async(std::launch::async, [relay=data.transport,asset,cache,path,existing,trace,texture=pending->texture] {
         auto shared=existing;
         if(!shared){
             auto pack=path.empty()?relay->obtain(asset,cache):loadRoomFile(path,asset);
@@ -504,7 +530,12 @@ void NativeModelRelay::tick(IClientInstance& client, Player* player, ModelPack c
             pack.librarySource="server:"+asset.contentKey;
             shared=std::make_shared<ModelPack const>(std::move(pack));
         }
-        return Candidate{shared,AnimationRuntime::prepare(*shared,{})};
+        if (!trace.empty()) {
+            std::error_code ec;
+            std::filesystem::create_directories(trace.parent_path(), ec);
+            if (ec) return Candidate{shared,AnimationRuntime::prepare(*shared,{})};
+        }
+        return Candidate{shared,AnimationRuntime::prepare(*shared,trace)};
     });
 }
 

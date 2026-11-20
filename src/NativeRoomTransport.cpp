@@ -180,7 +180,10 @@ struct RoomTransport::Impl {
     std::optional<NetworkIdentifier> upstream;
     Outbox outgoing;
     Clock::time_point nextHello{};
-    Clock::time_point lastConfirmation{};
+    ProbeDeadline handshake;
+    unsigned recoveryAttempts{};
+    std::optional<bool> serverCapability;
+    std::map<std::string, bool, std::less<>> rosterCapabilities;
     Clock::time_point nextPresence{};
     Clock::time_point nextLatency{};
     std::optional<int> latency;
@@ -199,7 +202,10 @@ struct RoomTransport::Impl {
         upstream.reset();
         outgoing = {};
         nextHello = {};
-        lastConfirmation = {};
+        handshake = {};
+        recoveryAttempts = 0;
+        serverCapability.reset();
+        rosterCapabilities.clear();
         nextPresence = {};
         nextLatency = {};
         latency.reset();
@@ -292,16 +298,26 @@ void RoomTransport::clientTick(IClientInstance& client, Player* local) {
         if (impl->local.empty()) return;
         impl->level = &local->getLevel();
         impl->role = role;
+        if (auto mod = ll::mod::NativeMod::current())
+            mod->getLogger().info("Room world entered: role={}, multiplayerClient={}",
+                role == RoomRole::Host ? "host" : "guest", client.isMultiPlayerClient());
     }
     auto frames = impl->inbox->take(PacketSide::Client);
     if (role != RoomRole::Guest) return;
-    if (!ll::network::Packet::canSendToServer(wireId)) {
+    auto capable = ll::network::Packet::canSendToServer(wireId);
+    if (impl->serverCapability != capable) {
+        impl->serverCapability = capable;
+        if (auto mod = ll::mod::NativeMod::current()) mod->getLogger().info("Room host advertises ysm:room={}", capable);
+    }
+    if (!capable) {
         if (impl->guest.ready) impl->event(RoomWireKind::Left, roomHostPeer);
         impl->guest = {};
         impl->upstream.reset();
         impl->outgoing = {};
         impl->nextHello = {};
         impl->latency.reset();
+        impl->handshake = {};
+        impl->recoveryAttempts = 0;
         return;
     }
     auto now = Clock::now();
@@ -316,7 +332,8 @@ void RoomTransport::clientTick(IClientInstance& client, Player* local) {
         } else if (impl->upstream && f.frame.op == Op::Ready) {
             bool wasReady = impl->guest.ready;
             if (impl->guest.finish(f.frame)) {
-                impl->lastConfirmation = now;
+                impl->handshake.since = now;
+                impl->recoveryAttempts = 0;
                 if (!wasReady) {
                     impl->event(RoomWireKind::Joined, roomHostPeer);
                     if (auto mod = ll::mod::NativeMod::current()) mod->getLogger().info("Room transport guest received READY from host");
@@ -326,17 +343,32 @@ void RoomTransport::clientTick(IClientInstance& client, Player* local) {
             impl->event(RoomWireKind::Data, roomHostPeer, std::move(f.body));
         }
     }
-    if (impl->guest.ready && now - impl->lastConfirmation > std::chrono::seconds(20)) {
-        impl->event(RoomWireKind::Left, roomHostPeer);
+    if (impl->handshake.expired(now, impl->guest.ready)) {
+        if (impl->guest.ready) {
+            impl->event(RoomWireKind::Left, roomHostPeer);
+        } else if (impl->recoveryAttempts < 3) {
+            // LL may retain the client's "registration already answered" flag
+            // while the host has dropped the previous connection's return route.
+            // Advertise our own receiving handler again using the public API.
+            auto& registrar = ll::network::PacketRegistrar::getInstance();
+            registrar.unregisterHandler(wireId, PacketSide::Client);
+            auto registered = registrar.registerHandler(packetName, wireId, handler(), PacketSide::Client);
+            ++impl->recoveryAttempts;
+            if (auto mod = ll::mod::NativeMod::current())
+                mod->getLogger().info("Room retry {}: refreshed client receive capability={}, had_ack={}",
+                    impl->recoveryAttempts, registered, impl->upstream.has_value());
+        }
         impl->guest = {};
         impl->upstream.reset();
         impl->outgoing = {};
         impl->nextHello = {};
         impl->latency.reset();
+        impl->handshake = {};
     }
     if (now >= impl->nextHello) {
         if (impl->guest.pair.client == Nonce{}) impl->guest.pair.client = nonce();
-        if (impl->guest.pair.client != Nonce{}) writePacket(nullptr, {Op::Hello, impl->guest.pair.client, {}});
+        if (impl->guest.pair.client != Nonce{} && writePacket(nullptr, {Op::Hello, impl->guest.pair.client, {}})
+            && !impl->handshake.since) impl->handshake.since = now;
         impl->nextHello = now + std::chrono::seconds(impl->guest.ready ? 5 : 1);
     }
     if (impl->guest.ready) {
@@ -364,8 +396,9 @@ void RoomTransport::serverTick(Level& level) {
     auto frames = impl->inbox->take(PacketSide::Server);
     auto now = Clock::now();
     bool needsSend = std::any_of(impl->peers.begin(), impl->peers.end(), [](auto const& p) { return !p.second.outgoing.empty(); });
-    if (frames.empty() && !needsSend && now < impl->nextPresence) return;
-    impl->nextPresence = now + std::chrono::milliseconds(500);
+    bool checkPresence = now >= impl->nextPresence;
+    if (frames.empty() && !needsSend && !checkPresence) return;
+    if (checkPresence) impl->nextPresence = now + std::chrono::milliseconds(500);
     std::map<std::string, std::optional<NetworkIdentifier>, std::less<>> roster;
     level.forEachPlayer([&](Player& player) {
         auto connection = player.getEntityContext().tryGetComponent<UserEntityIdentifierComponent>();
@@ -384,6 +417,17 @@ void RoomTransport::serverTick(Level& level) {
         if (item.second.probe.live.client != Nonce{}) impl->event(RoomWireKind::Left, item.first);
         return true;
     });
+    if (checkPresence) {
+        std::erase_if(impl->rosterCapabilities, [&](auto const& item) { return !roster.contains(item.first); });
+        for (auto const& [key, endpoint] : roster) {
+            bool available = endpoint && ll::network::Packet::canSendTo(wireId, *endpoint);
+            auto [it, fresh] = impl->rosterCapabilities.try_emplace(key, available);
+            if (fresh || it->second != available) {
+                it->second = available;
+                if (auto mod = ll::mod::NativeMod::current()) mod->getLogger().info("Room roster peer advertises ysm:room={}", available);
+            }
+        }
+    }
     for (auto& f : frames) {
         auto owner = std::find_if(roster.begin(), roster.end(), [&](auto const& p) { return p.second && *p.second == f.endpoint; });
         if (owner == roster.end() || !ll::network::Packet::canSendTo(wireId, f.endpoint)) continue;

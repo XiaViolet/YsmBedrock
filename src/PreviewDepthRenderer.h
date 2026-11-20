@@ -9,6 +9,7 @@ class PreviewDepthRenderer {
 public:
     PreviewDepthRenderer();
     ~PreviewDepthRenderer();
+    void clearFrame();
     TextureImage render(PreviewMesh const& mesh, unsigned side);
 };
 }

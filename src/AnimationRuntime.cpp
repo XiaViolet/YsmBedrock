@@ -195,6 +195,7 @@ struct AnimationState {
     std::mutex frameMutex;
     HandVisibilityByPass visibleHands;
     std::atomic<bool> ysmLanceCharge = false;
+    std::atomic<bool> worldBodyPosed = false;
     std::size_t calls = 0;
     std::size_t attachments = 0;
     std::size_t preparationCalls = 0, handCalls = 0, bodyCalls = 0;
@@ -599,7 +600,7 @@ public:
             {"pose_calls", data->calls}});
         auto* renderData = static_cast<ActorRenderData*>(params.mActorRenderData);
         bool firstPerson = data->bindings.bind(params, data->texture, data->geometry.armParts);
-        bool inventory = (UiRenderContextTracker::isActive() && !data->inGame) || (renderData && renderData->mIsInUI);
+        bool inventory = (UiRenderContextTracker::isActive() && !data->inGame && !data->remote) || (renderData && renderData->mIsInUI);
         if (inventory) firstPerson = false;
         if (!data->nativeRenderStacks.contains("initial")) data->nativeRenderStacks["initial"] = nativeRenderStack();
         if (!inventory && data->calls >= 2000 && !data->nativeRenderStacks.contains("world"))
@@ -888,6 +889,7 @@ public:
             }
         }
         data->poseCpu.record(poseStarted);
+        if (applied && !inventory && !firstPerson) data->worldBodyPosed.store(true, std::memory_order_relaxed);
         if (params.mAnimationComponent) params.mAnimationComponent->mNeedToUpdateQueryableBoneOrientations = true;
         ++data->calls;
         if (reportDue) {
@@ -1292,6 +1294,9 @@ void AnimationRuntime::applyPeerPose(RelayPose const& peer, std::uint64_t& event
         for (auto value : event.arguments) args.emplace_back(static_cast<double>(value));
         context.dispatchSync(args);
     }
+}
+bool AnimationRuntime::hasWorldBodyPose() const {
+    return impl->state && impl->state->worldBodyPosed.load(std::memory_order_relaxed);
 }
 void AnimationRuntime::remoteFrame() {
     if (!impl->state) return;

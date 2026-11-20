@@ -2,15 +2,17 @@
 
 YsmBedrock 是 [Yes Steve Model](https://github.com/YesSteveModel/YesSteveModel) 面向 Minecraft 基岩版 Windows 客户端的非官方移植，支持导入 YSM 模型、替换玩家外观和播放动作。基岩版移植代码主要由 OpenAI Codex 编写，项目由 XiaViolet 维护。
 
-**内测版 0.29.20** · Windows x64 · Minecraft 1.26.60.05 · LeviLamina 26.60.7／26.60.8
+**源码版本 0.29.24** · Windows x64 · Minecraft 1.26.60.05 · LeviLamina 26.60.7／26.60.8
 
 ## 安装与反馈
 
-[YsmBedrock-0.29.20.mcmod 下载页](https://github.com/XiaViolet/YsmBedrock/blob/downloads/YsmBedrock-0.29.20.mcmod)。打开后点击文件页的下载按钮。
+[GitHub Releases](https://github.com/XiaViolet/YsmBedrock/releases) 提供发布版本的 `.mcmod`。也可下载[旧版 0.29.20 内测包](https://github.com/XiaViolet/YsmBedrock/blob/downloads/YsmBedrock-0.29.20.mcmod)。
 
-下载后，在 LeviLauncher 对应 Windows 实例的「模组管理」中导入。游戏内按 `Alt+Y` 打开模型库，按 `Z` 打开动作转盘。
+LeviLauncher 的「LeviMC 模组」目录使用仓库中的 `lip.toml` 安装 Windows x64 客户端版，依赖 LeviLamina 26.60.8。
 
-- [内测说明与验证范围](docs/0.29.20-内测说明.md)
+手动安装时，在 LeviLauncher 对应 Windows 实例的「模组管理」中导入。游戏内按 `Alt+Y` 打开模型库，按 `Z` 打开动作转盘。
+
+- [0.29.20 内测记录](docs/0.29.20-内测说明.md)
 - [项目功能手册](docs/项目功能手册.md)
 - [房间同步](docs/0.29.19-房间模型同步.md)与[中继联机配置](docs/联机使用.md)
 

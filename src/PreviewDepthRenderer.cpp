@@ -183,6 +183,25 @@ struct PreviewDepthRenderer::Impl {
 
 PreviewDepthRenderer::PreviewDepthRenderer() : impl(std::make_unique<Impl>()) {}
 PreviewDepthRenderer::~PreviewDepthRenderer() = default;
+void PreviewDepthRenderer::clearFrame() {
+    auto& g = *impl;
+    if (!g.side && !g.atlas && !g.vertices && !g.color) return;
+    ID3D11ShaderResourceView* emptyAtlas = nullptr;
+    g.ctx->PSSetShaderResources(0, 1, &emptyAtlas);
+    ID3D11Buffer* emptyBuffer = nullptr;
+    UINT zero = 0;
+    g.ctx->IASetVertexBuffers(0, 1, &emptyBuffer, &zero, &zero);
+    g.ctx->OMSetRenderTargets(0, nullptr, nullptr);
+    g.atlas.Reset();
+    g.lastSkin.reset();
+    g.vertices.Reset();
+    g.capacity = 0;
+    g.target.Reset();
+    g.depth.Reset();
+    g.color.Reset();
+    g.readback.Reset();
+    g.side = 0;
+}
 TextureImage PreviewDepthRenderer::render(PreviewMesh const& mesh, unsigned side) {
     auto& g = *impl;
     g.resize(side);

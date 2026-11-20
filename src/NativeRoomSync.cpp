@@ -195,20 +195,27 @@ struct NativeRoomSync::Impl {
                 }
                 for(auto const& task:tasks){
                     if(task=="reload"){refresh();source.clear();}
-                    else if(next==RoomRole::Host && (task=="toggle-auto" || task.starts_with("deny:"))){
+                    else if(next==RoomRole::Host && (task=="toggle-auto" || task.starts_with("deny:") || task.starts_with("allow:"))){
                         auto path=root/"room-sync.json";
                         if(fs::file_size(path)>65536)throw std::runtime_error("Room settings are too large");
                         auto config=Json::parse(std::ifstream(path));
                         if(task=="toggle-auto")config["auto_receive_current"]=!autoReceive;
                         else{
-                            auto k=task.substr(5);
-                            if(!room->frame().assets.contains(k))continue;
                             auto keys=config.value("denied_content_keys",std::set<std::string>{});
-                            if(keys.size()>=256)throw std::runtime_error("Room deny list is full");
-                            keys.insert(k);config["denied_content_keys"]=std::move(keys);
+                            if(task.starts_with("allow:")){
+                                if(!keys.erase(task.substr(6)))continue;
+                            }else{
+                                auto k=task.substr(5);
+                                if(!room->frame().assets.contains(k) || keys.contains(k))continue;
+                                if(keys.size()>=256)throw std::runtime_error("Room deny list is full");
+                                keys.insert(k);
+                            }
+                            config["denied_content_keys"]=std::move(keys);
                         }
+                        auto encoded=config.dump(2);
+                        if(encoded.size()>65536)throw std::runtime_error("Room settings are too large");
                         auto temp=root/("room-settings-"+ModelRelay::newSession()+".tmp");
-                        {std::ofstream out(temp);out<<config.dump(2);out.close();if(!out)throw std::runtime_error("Cannot save room rules");}
+                        {std::ofstream out(temp,std::ios::binary);out<<encoded;out.close();if(!out)throw std::runtime_error("Cannot save room rules");}
                         std::error_code ec;fs::rename(temp,path,ec);
                         if(ec){fs::remove(temp);throw std::runtime_error("Cannot replace room-sync.json");}
                         auto cfg=settings(root);room->setRules(cfg.rules);autoReceive=cfg.rules.autoReceiveCurrent;
@@ -272,6 +279,7 @@ struct NativeRoomSync::Impl {
                 }
                 auto view=std::make_shared<RoomView>();view->frame=room->frame();view->states=room->statuses();
                 view->peerStates=room->peerStates();view->offers=room->offers();view->connected=room->connected();
+                view->deniedModels=room->deniedModels();
                 std::set<std::string> pins;
                 if(current)pins.insert(current->digest);
                 for(auto const& a:shares)pins.insert(a.digest);
@@ -331,9 +339,13 @@ struct NativeRoomSync::Impl {
 NativeRoomSync::NativeRoomSync():impl(std::make_unique<Impl>()){}
 NativeRoomSync::~NativeRoomSync(){stop();}
 void NativeRoomSync::start(fs::path const& root){
-    stop();impl->root=root;
-    fs::create_directories(root/"room-share");
-    if(!fs::exists(root/"room-sync.json"))settings(root);
+    stop();
+    // BedrockBoot links the instance's mods directory to its loader-managed
+    // location. Resolve this trusted installation path before deriving any
+    // cache paths. RoomAssets still rejects links inside the managed cache.
+    impl->root=fs::canonical(root);
+    fs::create_directories(impl->root/"room-share");
+    if(!fs::exists(impl->root/"room-sync.json"))settings(impl->root);
     if(!impl->wire.start())return;
     impl->worker=std::jthread([this](std::stop_token stop){impl->run(stop);});
 }

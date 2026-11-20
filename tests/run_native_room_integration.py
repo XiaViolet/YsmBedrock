@@ -1,5 +1,6 @@
 """Build the real Windows worker against a release ysm-inspect build; only transport uses a test double."""
 import argparse
+import _winapi
 import concurrent.futures
 import hashlib
 import os
@@ -71,6 +72,11 @@ with tempfile.TemporaryDirectory(prefix="ysm-native-room-", dir=options.scratch)
              "Temporary fresh, independent model libraries and caches. Release inspector core dependencies."]
     for endpoint, asset in assets.items():
         directory = testdir / endpoint / "models"
+        if endpoint == "Bea":
+            managed = work / "config" / "BedrockBoot2" / "levilamina" / "ll.mods"
+            managed.mkdir(parents=True)
+            _winapi.CreateJunction(str(managed), str(testdir / endpoint))
+            lines.append("Bea uses a launcher-managed directory junction.")
         directory.mkdir(parents=True, exist_ok=True)
         dest = directory / ("current"+asset.suffix.lower())
         shutil.copyfile(asset, dest)

@@ -48,6 +48,8 @@ public:
     // Only pass explicitly shared models. On guests, these are offers to the host.
     void share(std::vector<RelayAsset> assets);
     std::vector<RoomOffer> offers() const;
+    // Host settings remain editable when a denied model or its wearer leaves the catalog.
+    std::map<std::string,std::string> deniedModels() const;
     bool acceptOffer(std::string const& peer, std::string const& contentKey);
     // Pass an empty asset to restore vanilla or withdraw an unavailable/protected model.
     void publish(std::optional<RelayAsset> asset, RelayPose pose);

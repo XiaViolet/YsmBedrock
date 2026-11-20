@@ -8,7 +8,14 @@
 #include <stdexcept>
 
 namespace ysm {
-void NativeMenuPreview::reset() { layers = {}; group.reset(); renderer.reset(); lastSize = 0; }
+void NativeMenuPreview::reset() {
+    layers = {};
+    group.reset();
+    lastSize = 0;
+    // Releasing the last D3D11 device reference here can wait inside the display
+    // driver while Minecraft's UI render callback is still on the stack.
+    if (renderer) renderer->clearFrame();
+}
 
 void NativeMenuPreview::draw(MinecraftUIRenderContext& context, UiRect rect, PreviewMesh const& mesh,
                             std::uint64_t frame, float pixelDensity) {

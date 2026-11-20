@@ -1,5 +1,6 @@
 #include "SkinRuntime.h"
 #include "ClientGeometry.h"
+#include "ContentHash.h"
 #include "mc/client/components/ClientSkinSystem.h"
 #include "mc/client/components/ClientSkin.h"
 #include "mc/client/game/IClientInstance.h"
@@ -69,7 +70,12 @@ SkinRuntime::~SkinRuntime() = default;
 void SkinRuntime::apply(IClientInstance& client, Player& player, ModelPack const& pack, std::string_view owner,
     std::string const* preparedGeometry) {
     auto key = pack.renderKey();
-    if (!owner.empty()) key += "_p" + std::string(owner);
+    // The same key is used in geometry identifiers and texture paths. Room
+    // identities (e.g. "uuid:...") are not Bedrock resource path components.
+    if (!owner.empty()) {
+        auto bytes = std::span(reinterpret_cast<unsigned char const*>(owner.data()), owner.size());
+        key += "_p" + contentSha256(bytes);
+    }
     auto skinId = "ysm.client." + key;
     auto reducedId = "ysm.client.reduced." + key;
     if (active && (renderId == skinId || renderId == reducedId)) {
