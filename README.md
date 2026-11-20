@@ -6,7 +6,9 @@ YsmBedrock 是 [Yes Steve Model](https://github.com/YesSteveModel/YesSteveModel)
 
 ## 安装与反馈
 
-在 LeviLauncher 对应实例的模组管理中导入维护者单独提供的 `YsmBedrock-0.29.20.mcmod`。游戏内按 `Alt+Y` 打开模型库，按 `Z` 打开动作转盘。
+[下载 YsmBedrock-0.29.20.mcmod](https://github.com/XiaViolet/YsmBedrock/raw/refs/heads/downloads/YsmBedrock-0.29.20.mcmod)
+
+下载后，在 LeviLauncher 对应 Windows 实例的「模组管理」中导入。游戏内按 `Alt+Y` 打开模型库，按 `Z` 打开动作转盘。
 
 - [内测说明与验证范围](docs/0.29.20-内测说明.md)
 - [项目功能手册](docs/项目功能手册.md)
