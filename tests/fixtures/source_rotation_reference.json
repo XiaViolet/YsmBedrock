@@ -1,0 +1,122 @@
+{
+  "upstream": "15c2c25f5b50f54ee099bc474483dc4b588d956d",
+  "math_util_sha256": "f2a4765560e6b5fb8ad0f0ef80343c860c813ae32986d4f90bc74a32374f94ed",
+  "joml_sha256": "cac9f22f83a7aa33eebda73c16ff5261e3cb4911b6bafcf4c79ea486099d0c9a",
+  "cases": {
+    "quarter_shortest": {
+      "begin": [
+        0,
+        0,
+        0
+      ],
+      "end": [
+        0,
+        0,
+        270
+      ],
+      "initial": [
+        0,
+        0,
+        0
+      ],
+      "alpha": 0.25,
+      "rotation": [
+        -0.0,
+        -0.0,
+        -21.59816
+      ]
+    },
+    "half_shortest": {
+      "begin": [
+        0,
+        0,
+        0
+      ],
+      "end": [
+        0,
+        0,
+        270
+      ],
+      "initial": [
+        0,
+        0,
+        0
+      ],
+      "alpha": 0.5,
+      "rotation": [
+        -0.0,
+        -0.0,
+        -45.0
+      ]
+    },
+    "mixed_with_initial": {
+      "begin": [
+        -30,
+        20,
+        10
+      ],
+      "end": [
+        120,
+        80,
+        60
+      ],
+      "initial": [
+        7,
+        13,
+        19
+      ],
+      "alpha": 0.25,
+      "rotation": [
+        -17.883205,
+        30.800049,
+        -4.173702
+      ]
+    },
+    "coded_ending": {
+      "begin": [
+        0,
+        0,
+        270
+      ],
+      "end": [
+        0,
+        0,
+        10
+      ],
+      "initial": [
+        0,
+        0,
+        0
+      ],
+      "alpha": 0.25,
+      "rotation": [
+        -0.0,
+        -0.0,
+        -66.248535
+      ]
+    },
+    "bedrock_ending": {
+      "begin": [
+        0,
+        0,
+        202.5
+      ],
+      "end": [
+        0,
+        0,
+        0
+      ],
+      "initial": [
+        0,
+        0,
+        0
+      ],
+      "alpha": 0.25,
+      "rotation": [
+        -0.0,
+        -0.0,
+        -123.37052
+      ]
+    }
+  }
+}

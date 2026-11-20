@@ -1,0 +1,29 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "YSM model particles",
+    "description": "Client particle effects for Yes Steve Model",
+    "uuid": "39bb367d-990e-4b20-845f-af5994177dac",
+    "version": [
+      1,
+      0,
+      0
+    ],
+    "min_engine_version": [
+      1,
+      21,
+      0
+    ]
+  },
+  "modules": [
+    {
+      "type": "resources",
+      "uuid": "3be49ceb-8e45-48e6-9fdd-560bcedc2079",
+      "version": [
+        1,
+        0,
+        0
+      ]
+    }
+  ]
+}

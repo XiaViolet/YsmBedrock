@@ -1,0 +1,16 @@
+package("dav1d")
+    set_homepage("https://www.videolan.org/projects/dav1d.html")
+    set_description("AV1 decoder")
+    set_license("BSD-2-Clause")
+    add_urls("https://downloads.videolan.org/pub/videolan/dav1d/$(version)/dav1d-$(version).tar.xz")
+    add_versions("1.5.2", "cce88ebcffd3f790bde49caa75f97b9cc2dd54ca8f57e38c62707266ec71bc4e")
+    add_deps("meson", "ninja", "nasm 2.16.03")
+    on_install(function (package)
+        local configs = {"-Denable_tests=false", "-Denable_tools=false",
+            "-Ddefault_library=" .. (package:config("shared") and "shared" or "static")}
+        import("package.tools.meson").install(package, configs)
+    end)
+    on_test(function (package)
+        assert(package:has_cfuncs("dav1d_default_settings", {includes = "dav1d/dav1d.h"}))
+    end)
+package_end()
