@@ -61,7 +61,7 @@ bool NativeModelFactory::supports(Model const& original) {
         && matches(base, definitionDestroy, destroySignature);
 }
 NativeModelInstance NativeModelFactory::createTarget(DataDrivenModel const& original,
-    std::shared_ptr<GeometryInfo> const& geometry, std::set<std::string> const& bones, std::string const& identity) {
+    std::shared_ptr<GeometryInfo> const& geometry, std::set<std::string> const& bones, std::string const& identity, float drawScale) {
     if (!supports(original)) throw std::runtime_error("Native model factory is unavailable for this client layout");
     auto source = original.mResourceDefinition.lock();
     if (!source || !geometry || !geometry->mPtr || bones.empty() || identity.empty())
@@ -96,7 +96,7 @@ NativeModelInstance NativeModelFactory::createTarget(DataDrivenModel const& orig
         animation.mActorAnimationInfoPtr.reset();
     // Native entity scale is applied about the entity origin. Scaling each
     // authored root about its pivot instead would displace multi-root models.
-    definition.mActorScripts->try_emplace(HashedString("scale")).first->second.mImpl->emplace<float>(0.7f);
+    definition.mActorScripts->try_emplace(HashedString("scale")).first->second.mImpl->emplace<float>(drawScale);
     definition.mEnableAttachables = false;
     definition.mHideArmor = true;
     definition.mQueryableGeometryBoneNames->clear();

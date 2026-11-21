@@ -33,6 +33,7 @@
 #include "ModelPack.h"
 #include "ModelLibrary.h"
 #include "SkinRuntime.h"
+#include "NativePbrDrawProbe.h"
 #include "AnimationRuntime.h"
 #include "NativeRenderBindings.h"
 #include "NativeReplacedResources.h"
@@ -41,12 +42,14 @@
 #include "mc/deps/nbt/CompoundTag.h"
 #include "NativeModelRelay.h"
 #include "NativeBoneVisual.h"
+#include "mc/client/gui/screens/ScreenContext.h"
 #include "NativeModelParticles.h"
 #include "NativeModelAudio.h"
 #include "mc/client/renderer/actor/v2/DataDrivenRendererV2.h"
 #include "mc/deps/minecraft_renderer/resources/MERSUniformData.h"
 #include "KeyBindings.h"
 #include "NativeYsmUi.h"
+#include "NativeMenuTouch.h"
 #include "NativeModelPicker.h"
 #include "NativeWeather.h"
 #include "mc/client/network/ClientNetworkHandler.h"
@@ -59,6 +62,8 @@
 #include "mc/client/model/models/DataDrivenGeometry.h"
 #include "mc/client/renderer/game/ItemInHandRenderer.h"
 #include "mc/client/renderer/BaseActorRenderContext.h"
+#include "mc/deps/renderer/Camera.h"
+#include <glm/gtc/matrix_transform.hpp>
 #include "mc/client/world/actor/animation/ClientAnimationComponent.h"
 #include "mc/client/renderer/actor/ActorRenderData.h"
 #include "mc/client/renderer/actor/ActorRenderDispatcher.h"
@@ -89,6 +94,14 @@
 namespace ysm {
 static void installHooks();
 static void removeHooks();
+// The immediate player renderer can clone a skinned mesh after geometry
+// registration. Keep its exact owner for this draw, including nested renders.
+struct ActorDrawScope {
+    static inline thread_local Actor const* current = nullptr;
+    Actor const* previous;
+    explicit ActorDrawScope(Actor const* actor) : previous(std::exchange(current, actor)) {}
+    ~ActorDrawScope() { current = previous; }
+};
 class Mod {
     std::optional<ModelPack> pack;
     std::optional<ModelLibrary> library;
@@ -96,7 +109,8 @@ class Mod {
     SkinRuntime runtime;
     AnimationRuntime animation;
     NativeModelRelay relay;
-    NativeReplacedResources targetResources;
+    std::shared_ptr<NativeReplacedResources> targetStorage = std::make_shared<NativeReplacedResources>();
+    NativeReplacedResources& targetResources = *targetStorage;
     bool targetRenderingEnabled = false;
     std::set<std::string> targetRendererTypes;
     Json targetRendererReports = Json::array();
@@ -129,6 +143,30 @@ class Mod {
     NativeYsmUi ui;
     Json uiSettings = YsmUi::defaultSettings();
     bool debugOverlay = false;
+    std::atomic<bool> arkeShaderEnabled{false};
+    std::chrono::steady_clock::time_point nextArkeCheck{};
+    void refreshArkeShader() {
+        auto now = std::chrono::steady_clock::now();
+        if (now < nextArkeCheck) return;
+        nextArkeCheck = now + std::chrono::seconds(2);
+        auto arke = ll::mod::ModManagerRegistry::getInstance().getMod("arke");
+        bool enabled = false;
+        if (arke && arke->isEnabled() && uiSettings.value("arke_extra_emissive_layer", false)) {
+            std::ifstream stream(arke->getModDir() / "config.json");
+            // Arke 0.1.5 stores shader selection in a small JSON document.
+            // A truncated config during a preset switch falls back on the next tick.
+            std::array<char, 4097> bytes;
+            stream.read(bytes.data(), bytes.size());
+            auto count = stream.gcount();
+            if (!stream.bad() && count > 0 && count < static_cast<std::streamsize>(bytes.size())) {
+                auto config = Json::parse(bytes.begin(), bytes.begin() + count, nullptr, false);
+                enabled = config.is_object() && config.contains("enabled") && config["enabled"] == true &&
+                    config.contains("shaderpack") && config["shaderpack"].is_string() &&
+                    !config["shaderpack"].get_ref<std::string const&>().empty();
+            }
+        }
+        arkeShaderEnabled.store(enabled, std::memory_order_relaxed);
+    }
     std::shared_ptr<ModelPreview const> uiPreview;
     std::uint64_t uiGeneration = 1;
     struct LoadRequest { std::string source; bool wear; };
@@ -179,6 +217,7 @@ class Mod {
     std::map<std::string, std::string> modVersions;
     Json uiRenderContexts = Json::array();
 public:
+    bool usesArkeShader() const { return arkeShaderEnabled.load(std::memory_order_relaxed); }
     std::filesystem::path animationDiagnostics() const {
         return debugOverlay ? self->getModDir() / "animation-status.json" : std::filesystem::path{};
     }
@@ -187,7 +226,7 @@ public:
         self = ll::mod::NativeMod::current().get();
         relay.configure(self->getModDir());
         debugOverlay = std::filesystem::exists(self->getModDir() / "diagnostics.enable");
-        ui.diagnostics(debugOverlay ? self->getModDir() / "ui-input-status.json" : std::filesystem::path{});
+        ui.diagnostics(self->getModDir(),debugOverlay);
         targetRenderingEnabled = std::filesystem::exists(self->getModDir() / "target-render-probe.enable");
         self->getLogger().setFlushLevel(ll::io::LogLevel::Info);
         try {
@@ -246,6 +285,7 @@ public:
         if (auto const& version = self->getManifest().version) modVersions["ysm"] = version->to_string();
         clearNativeWeather();
         installHooks();
+        startPbrDrawProbe(self->getModDir(), runtime);
         auto& bus = ll::event::EventBus::getInstance();
         weatherListeners.push_back(bus.emplaceListener<ll::event::ServerLevelTickEvent>([this](auto& event) {
             targetResources.serverTick(event.level());
@@ -275,7 +315,7 @@ public:
         });
         mouseListener = bus.emplaceListener<ll::event::MouseInputEvent>([this](auto& event) {
             if (auto client = ll::service::getClientInstance())
-                if (ui.mouse(*client, event.actionButtonId(), event.buttonData(), event.x(), event.y())) event.cancel();
+                if (ui.mouse(*client, event.actionButtonId(), event.buttonData(), event.x(), event.y(), event.dx(), event.dy())) event.cancel();
         });
         uiListener = bus.emplaceListener<ll::event::AfterUIRenderEvent>([this](auto& event) {
             try { ui.render(event.uiRenderContext(), animation); }
@@ -475,6 +515,10 @@ public:
                     else if (c.key=="hud_fps") uiSettings[c.key]=std::clamp(static_cast<int>(c.value),5,30);
                     else if (c.key.starts_with("hud_")) uiSettings[c.key] = std::clamp(static_cast<int>(c.value), 0, 100);
                     else uiSettings[c.key] = c.value != 0;
+                    if (c.key == "arke_extra_emissive_layer") {
+                        nextArkeCheck = {};
+                        refreshArkeShader();
+                    }
                     if (c.key == "disable_self_model") {
                         if (c.value != 0 && runtime.isActive()) { endModel(client, player); runtime.restore(client, player); }
                         else if (c.value == 0 && !runtime.isActive()) apply(client, player);
@@ -534,6 +578,10 @@ public:
     }
     std::span<BoneVisual const> boneVisuals(SkinnedMesh const& mesh, RenderController const* controller,
         std::span<BoneVisual> local, std::vector<BoneVisual>& overflow) {
+        if (ActorDrawScope::current && animation.rendersPlayer(*ActorDrawScope::current))
+            return animation.boneVisuals(mesh, controller, local, overflow, ActorDrawScope::current);
+        if (ActorDrawScope::current && relay.rendersPlayer(*ActorDrawScope::current))
+            return relay.visuals(mesh, controller, local, overflow, ActorDrawScope::current);
         if (targetRenderingEnabled) {
             auto target = targetResources.visuals(mesh, controller, local, overflow);
             if (!target.empty()) return target;
@@ -545,7 +593,8 @@ public:
         if (auto* owner = shoulderParrotOwner(actor);
             owner && (animation.rendersPlayer(*owner) || relay.rendersPlayer(*owner))) return true;
         return animation.needsIndividualSurfaces(actor) || relay.needsSurfaces(actor) || (targetRenderingEnabled
-            && targetResources.hasActiveTarget(actor));
+            && (targetResources.hasActiveTarget(actor) || (actor.isPlayer() && actor.getVehicle()
+                && targetResources.hasActiveTarget(*actor.getVehicle()))));
     }
     unsigned handDrawMask(Actor const& actor, AttachableSlotIndex slot, bool nativeUi) const {
         if (!actor.isPlayer() || FirstPersonRenderScope::isActive()) return 1;
@@ -564,6 +613,27 @@ public:
         observeShoulderPassengers(*owner, targetResources, relay.shoulderSeats(*owner));
         if (!animation.rendersPlayer(*owner)) return relay.drawParrot(*owner, context, data, draw);
         drawShoulderParrot(animation, *owner, context, data, draw);
+        return true;
+    }
+    bool drawPassenger(Actor& actor, BaseActorRenderContext& context, std::function<void()> const& draw) {
+        static thread_local Actor const* applying = nullptr;
+        if (applying == &actor || !targetRenderingEnabled || !actor.isPlayer() || FirstPersonRenderScope::isActive()) return false;
+        auto* vehicle = actor.getVehicle();
+        auto& screen = static_cast<ScreenContext&>(context.mScreenContext);
+        if (!vehicle || screen.isDrawingUI || animation.rendersPlayer(actor) || relay.rendersPlayer(actor)) return false;
+        auto alpha = context.mFrameAlpha;
+        auto matrix = targetResources.passengerTransform(actor, *vehicle, alpha, false);
+        if (!matrix) return false;
+        auto pos = actor.getInterpolatedPosition(std::clamp(alpha, 0.f, 1.f));
+        auto camera = *context.mImpl->mCameraPosition;
+        glm::vec3 pivot(pos.x - camera.x, pos.y - camera.y + actor.getFeetPos().y - actor.getPosition().y, pos.z - camera.z);
+        auto& stack = static_cast<mce::Camera&>(screen.camera).worldMatrixStack;
+        auto scope = stack->push(false);
+        auto& current = *stack->getTop()._m;
+        current = glm::translate(current, pivot) * *matrix * glm::translate(glm::mat4(1), -pivot);
+        struct Restore { Actor const*& slot; Actor const* old; ~Restore() { slot = old; } };
+        Restore guard{applying, std::exchange(applying, &actor)};
+        draw();
         return true;
     }
     bool suppressNativeGlideRotation(Actor const& actor, bool firstPerson, std::array<float, 2> const& rotation) {
@@ -883,6 +953,7 @@ public:
             pollModelLoad(client, nullptr);
             return;
         }
+        refreshArkeShader();
         auto* level = &player->getLevel();
         if (player != lastPlayer || roamingLevel != level) {
             ui.close(&client); resetBrowse(); queuedModel.reset(); ++uiGeneration;
@@ -939,6 +1010,7 @@ public:
         }
         if (targetRenderingEnabled && runtime.isActive() && pack) {
             targetResources.updateOwner(player->getOrCreateUniqueID().rawID, *pack, animation.roamingSnapshot());
+            animation.trackSeats(targetStorage);
             targetResources.observeMount(*player);
         }
         static auto lastAssignmentReport = std::chrono::steady_clock::time_point{};
@@ -1167,6 +1239,7 @@ public:
     }
     bool disable() {
         if (auto client = ll::service::getClientInstance()) ui.close(&*client);
+        NativeMenuTouch::shutdown();
         if (mouseListener) ll::event::EventBus::getInstance().removeListener(mouseListener);
         if (uiListener) ll::event::EventBus::getInstance().removeListener(uiListener);
         mouseListener.reset(); uiListener.reset(); queuedModel.reset();
@@ -1198,6 +1271,7 @@ public:
         lastPlayer = nullptr;
         applyAfter.reset();
         toggleRequested = false;
+        stopPbrDrawProbe();
         removeHooks();
         clearNativeWeather();
         resetRoamingConnection();
@@ -1267,6 +1341,13 @@ LL_TYPE_INSTANCE_HOOK(MenuMouseCaptureHook, ll::memory::HookPriority::Normal, Cl
     if (Mod::getInstance().suppressMenuMouseCapture(*this)) return;
     origin();
 }
+LL_TYPE_INSTANCE_HOOK(PassengerSeatHook, ll::memory::HookPriority::Normal, ActorRenderDispatcher,
+    static_cast<void (ActorRenderDispatcher::*)(BaseActorRenderContext&, Actor&, Vec3 const&, Vec3 const&, Vec2 const&, bool)>(
+        &ActorRenderDispatcher::render), void, BaseActorRenderContext& ctx, Actor& actor,
+    Vec3 const& cameraTarget, Vec3 const& position, Vec2 const& rotation, bool ignoreLighting) {
+    auto draw = [&] { origin(ctx, actor, cameraTarget, position, rotation, ignoreLighting); };
+    if (!Mod::getInstance().drawPassenger(actor, ctx, draw)) draw();
+}
 LL_TYPE_INSTANCE_HOOK(TargetRendererRouteHook, ll::memory::HookPriority::Normal, ActorRenderDispatcher,
     &ActorRenderDispatcher::_getRenderer, std::shared_ptr<ActorRenderer>, Actor& actor) {
     auto renderer = origin(actor);
@@ -1333,6 +1414,9 @@ static auto const TargetTridentDrawSignature = ll::memory::Signature::parse(
     "0F 29 BD 10 01 00 00 0F 29 B5 00 01 00 00 48 C7 85 F8 00 00 00 FE FF FF FF 48 89 95 A8 00 00 00 4D 8B 38");
 LL_TYPE_INSTANCE_HOOK(TargetDataDrawHook, ll::memory::HookPriority::Normal, ActorRenderer,
     TargetDataDrawSignature.view(), void, BaseActorRenderContext& context, ActorRenderData& data) {
+    ActorDrawScope drawOwner(data.mActor);
+    if (data.mActor && !data.mIsInUI &&
+        Mod::getInstance().drawPassenger(*data.mActor, context, [&] { origin(context, data); })) return;
     if (Mod::getInstance().drawParrot(context, data, [&] { origin(context, data); })) return;
     if (!Mod::getInstance().drawTarget(*this, context, data)) origin(context, data);
 }
@@ -1418,19 +1502,32 @@ LL_TYPE_INSTANCE_HOOK(BoneVisualMeshHook, ll::memory::HookPriority::Normal, Skin
         origin(screen, metadata, controller, subLayer, material, texture, queue, previous, mers, shadow, dithering);
         return;
     }
-    drawBoneVisuals(*this, screen, queue, controller, material, visuals, [&](MaterialVariants const& selected) {
+    bool arkeWorldPass = !screen.isDrawingUI && !dithering && shadow != ShadowContext::ShadowOnly
+        && shadow != ShadowContext::PlayerShadowMapOnly && Mod::getInstance().usesArkeShader();
+    drawBoneVisuals(*this, screen, queue, controller, material, visuals, arkeWorldPass, [&](MaterialVariants const& selected) {
         origin(screen, metadata, controller, subLayer, selected, texture, queue, previous, mers, shadow, dithering);
     });
     if (measure) recordSurfaceCpuCost(
         std::chrono::duration<double, std::micro>(lookedUp - started).count(),
         std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - lookedUp).count());
 }
-// Verified tryAddActor entry in the supported 1.26.60.05 client. Unsupported
-// layouts retain native batching and report that this surface route is absent.
-static auto const SurfaceRouteSignature = ll::memory::Signature::parse(
-    "41 56 56 57 55 53 48 83 EC 40 48 8B 05 2F DA 44 0B 48 31 E0 48 89 44 24 38 4C 8B 51 08 4D 85 D2 0F 84 FB 00 00 00 49 8B 00 48 85 C0 0F 84 EF 00 00 00 4D 8B 42 38 4D 8B");
+// Another renderer may already own the entry detour. Resolve the native
+// function from its interior and verify the entry using Windows unwind data.
+static uintptr_t surfaceRouteEntry() {
+    static auto const interior = ll::memory::Signature::parse(
+        "4C 8B 51 08 4D 85 D2 0F 84 FB 00 00 00 49 8B 00 48 85 C0 0F 84 EF 00 00 00 4D 8B 42 38 4D 8B 5A 40 4D 29 C3");
+    auto address = reinterpret_cast<uintptr_t>(interior.view().resolve(true));
+    if (!address) return 0;
+    DWORD64 base = 0;
+    auto function = RtlLookupFunctionEntry(address, &base, nullptr);
+    if (!function || base != reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr))) return 0;
+    auto entry = base + function->BeginAddress;
+    constexpr uintptr_t interiorOffset = 25; // 1.26.60.05 x64 unwind entry to the first stable load
+    return address == entry + interiorOffset ? entry : 0;
+}
+static uintptr_t surfaceRouteAddress = 0;
 LL_TYPE_INSTANCE_HOOK(WorldSurfaceRouteHook, ll::memory::HookPriority::Normal, DataDrivenRendererV2,
-    SurfaceRouteSignature.view(), bool, Actor& actor, std::shared_ptr<ActorRenderer> const& renderer, ShadowContext shadow) {
+    surfaceRouteAddress, bool, Actor& actor, std::shared_ptr<ActorRenderer> const& renderer, ShadowContext shadow) {
     bool individual = Mod::getInstance().needsIndividualSurfaces(actor);
     recordSurfaceRoute(individual);
     if (individual) return false;
@@ -1456,7 +1553,7 @@ LL_TYPE_INSTANCE_HOOK(ArrowDamageHook, ll::memory::HookPriority::Normal, Mob,
 }
 using ArrowDamageHooks = ll::memory::HookRegistrar<ArrowDamageHook>;
 using Hooks = ll::memory::HookRegistrar<ClientSkinTickHook, ClientSkinFrameHook, SkinGeometryHook, SkinTextureHook, EarlyResourceTextureHook, PrepareGeometryHook, FirstPersonHook, PrepareAnimationHook, BoneVisualMeshHook,
-    SetupAttachableHook, RenderAttachableNoChecksHook, NativeGlideRotationHook, TargetRendererRouteHook,
+    SetupAttachableHook, RenderAttachableNoChecksHook, NativeGlideRotationHook, TargetRendererRouteHook, PassengerSeatHook,
     InitialWeatherHook, WeatherEventHook, UiContextCreateHook, UiContextDestroyHook, MenuMouseCaptureHook>;
 static std::unique_ptr<Hooks> hooks;
 static std::unique_ptr<SurfaceHooks> surfaceHooks;
@@ -1486,7 +1583,8 @@ static void installHooks() {
     }
     if (ll::memory::SymbolView("?hurtEffects@Mob@@UEAAXAEBVActorDamageSource@@MAEBUHurtEffectsSettings@@@Z").resolve(true))
         arrowDamageHooks = std::make_unique<ArrowDamageHooks>();
-    bool supported = SurfaceRouteSignature.view().resolve(true) != nullptr;
+    surfaceRouteAddress = surfaceRouteEntry();
+    bool supported = surfaceRouteAddress != 0;
     setSurfaceRouteSupport(supported);
     if (supported) surfaceHooks = std::make_unique<SurfaceHooks>();
 }

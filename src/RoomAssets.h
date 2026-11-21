@@ -30,6 +30,8 @@ public:
     void append(RelayAsset const& asset, std::uint64_t offset, std::span<unsigned char const> bytes);
     void finish(RelayAsset const& asset);
     void cancel(RelayAsset const& asset);
+    void pause(RelayAsset const& asset);
+    bool reserveTransfer(RelayAsset const& asset);
     void clearTransfers();
     // Futures own only a private staged file and a lease. Re-check session,
     // revision and room policy on the serial worker before commitPublish().

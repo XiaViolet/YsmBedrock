@@ -5,10 +5,7 @@ import subprocess
 import tempfile
 import unittest
 
-PROJECT = pathlib.Path(__file__).resolve().parents[1]
-EXE = PROJECT / 'build/windows/x64/release/ysm-inspect.exe'
-if not EXE.exists():
-    EXE = PROJECT.parent / 'ysm-inspect.exe'
+from inspector import EXE, PROJECT
 
 class MolangTests(unittest.TestCase):
     def run_expr(self, source, context=None):
@@ -36,6 +33,14 @@ class MolangTests(unittest.TestCase):
 
     def test_ysm_lerp_extrapolates(self):
         self.assertEqual(self.value('math.lerp(10,20,1.5)'), 25)
+
+    def test_compiled_math_applies_argument_side_effects_once_in_order(self):
+        source = ('v.i=0; v.out=math.lerp((v.i=v.i+1),(v.i=v.i+1),(v.i=v.i+1));'
+                  'return v.i*10+v.out;')
+        self.assertEqual(self.value(source), 34)
+        report = self.run_expr('math.max(1,2,3,4)')
+        self.assertIsNone(report['value'])
+        self.assertIn('math.max', report['diagnostics'][0])
 
     def test_case_and_namespace_aliases(self):
         self.assertEqual(self.value('V.X=Q.Input*2; return variable.x;', {'queries': {'query.input': 3}}), 6)

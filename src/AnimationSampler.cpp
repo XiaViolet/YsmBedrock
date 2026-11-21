@@ -210,7 +210,7 @@ AnimationSampler::AnimationSampler(Json const& document, Json const& geometry) {
     std::set<std::string> fallbackNames(fallbackClips.begin(), fallbackClips.end());
     Json const emptyBones = Json::object();
     for (auto const& [name, source] : document.at("animations").items()) {
-        clipOrder.push_back(name);
+        conditions.add(name);
         auto& clip = clips[name];
         bool explicitLength = source.contains("animation_length");
         clip.length = source.value("animation_length", 0.0);
@@ -430,12 +430,6 @@ double AnimationSampler::blendWeight(std::string const& name, double time, Molan
     context.queries["query.anim_time"] = time;
     double weight = found->second.weight ? found->second.weight->evaluate(context).number() : 1.0;
     return weight > 0 ? weight : 0;
-}
-bool AnimationSampler::hasScaleTrack(std::string const& name, std::string const& bone) const {
-    auto found = clips.find(name);
-    if (found == clips.end()) return false;
-    auto channels = found->second.bones.find(bone);
-    return channels != found->second.bones.end() && channels->second.values[2].has_value();
 }
 Pose AnimationSampler::sample(std::string const& state, double time) const {
     AnimationEvaluation evaluation;

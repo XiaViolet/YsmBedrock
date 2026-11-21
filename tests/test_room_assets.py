@@ -92,6 +92,16 @@ class RoomAssetsTests(unittest.TestCase):
         self.assertNotEqual(a['digest'], b['digest'])
         self.assertNotEqual(a['guest'], b['guest'])
 
+    def test_room_json_field_names_and_string_values_still_bounded(self):
+        model = self.source('模型', True)
+        descriptor = model / 'ysm.json'
+        original = json.loads(descriptor.read_text(encoding='utf8'))
+        long_text = 'x' * ((1 << 20) + 1)
+        for index, (name, value) in enumerate(((long_text, 0), ('notes', long_text))):
+            descriptor.write_text(json.dumps({**original, name: value}), encoding='utf8')
+            self.assertIn('string length limit: ysm.json',
+                          self.run_replay(model, 'large-string-' + str(index), check=False))
+
     def test_overdeep_model_document_rejected(self):
         source = self.source('模型', True)
         descriptor = source / 'ysm.json'

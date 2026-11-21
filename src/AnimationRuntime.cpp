@@ -2,6 +2,7 @@
 #include "NativePoseLayout.h"
 #include "ExtraAction.h"
 #include "ShoulderLocator.h"
+#include "NativeReplacedResources.h"
 #include "AnimationSampler.h"
 #include "ClientGeometry.h"
 #include "HandAnimationController.h"
@@ -144,7 +145,17 @@ struct AnimationState {
     NativeRenderBindings bindings;
     bool visualMaterials = false;
     bool forceCutout = false;
-    std::map<std::pair<SkinnedMesh const*, RenderController const*>, std::weak_ptr<SkinnedMesh>> visualMeshes;
+    struct PoseBinding;
+    struct VisualPart {
+        ModelPart const* part = nullptr;
+        PoseBinding const* binding = nullptr;
+        uint64_t nameHash = 0;
+    };
+    struct VisualMesh {
+        std::weak_ptr<SkinnedMesh> mesh;
+        std::vector<VisualPart> parts;
+    };
+    std::map<std::pair<SkinnedMesh const*, RenderController const*>, VisualMesh> visualMeshes;
     struct VisualGeometryCache {
         std::weak_ptr<DataDrivenGeometry> geometry;
         void const* parts = nullptr;
@@ -155,7 +166,7 @@ struct AnimationState {
     };
     std::map<DataDrivenGeometry const*, VisualGeometryCache> visualGeometryCaches;
     std::uint64_t visualGeometryCacheHits = 0, visualGeometryRefreshes = 0;
-    std::uint64_t visualDrawMatches = 0, visualDrawMisses = 0;
+    std::uint64_t visualDrawMatches = 0, visualDrawMisses = 0, visualDrawRecovered = 0;
     Json visualMissSamples = Json::array();
     Json nativeRenderStacks = Json::object();
     NativeTextureSet texture;
@@ -193,6 +204,7 @@ struct AnimationState {
     std::chrono::steady_clock::time_point pauseStarted{};
     std::set<std::string> observedStates;
     std::mutex frameMutex;
+    std::weak_ptr<NativeReplacedResources> seatSource;
     HandVisibilityByPass visibleHands;
     std::atomic<bool> ysmLanceCharge = false;
     std::atomic<bool> worldBodyPosed = false;
@@ -213,6 +225,8 @@ struct AnimationState {
     std::map<std::string, std::string> modVersions;
     std::atomic<bool> inGame = false;
     bool remote = false;
+    std::optional<unsigned> peerFlight;
+    std::map<std::string,float> receivedFormValues;
     Json lastObservation = nullptr;
     std::size_t startupFirstPersonPasses = 0;
     std::size_t startupRenderPreparations = 0;
@@ -432,8 +446,19 @@ static HandInput handInput(Player const& player, bool enabled) {
         {"head", SharedTypes::Legacy::ArmorSlot::Head}, {"chest", SharedTypes::Legacy::ArmorSlot::Torso},
         {"legs", SharedTypes::Legacy::ArmorSlot::Legs}, {"feet", SharedTypes::Legacy::ArmorSlot::Feet}}})
         result.armor[name] = handItem(player.getArmor(slot), -2 - static_cast<int>(slot));
-    if (player.getItemUseDuration() > 0 && !player.mItemInUse->mItem->isNull())
+    // Remote players can advertise use without populating the local active stack.
+    bool nativeUsing = player.getStatusFlag(ActorFlags::Usingitem);
+    if ((nativeUsing || player.getItemUseDuration() > 0) && !player.mItemInUse->mItem->isNull())
         result.usingHand = player.mItemInUse->mSlot->mContainerId == ContainerID::Offhand ? 1 : 0;
+    else if (nativeUsing) {
+        for (int hand = 0; hand < 2; ++hand) {
+            auto const& item = result.items[hand];
+            if (item.category == "bow" || item.category == "crossbow") {
+                result.usingHand = hand;
+                break;
+            }
+        }
+    }
     if (player.isBlocking()) {
         if (result.items[0].category == "shield") result.usingHand = 0;
         else if (result.items[1].category == "shield") result.usingHand = 1;
@@ -489,10 +514,13 @@ static EntityQueryInput entityInput(Player const& player, float frameAlpha,
         [](auto const& entry) { return !entry.second.id.empty(); }));
     input.usingItem = hands.usingHand >= 0;
     if (input.usingItem) {
-        auto const& item = *player.mItemInUse->mItem;
+        auto const& active = *player.mItemInUse->mItem;
+        auto const& item = !active.isNull() ? active
+            : hands.usingHand == 1 ? player.getOffhandSlot() : player.getSelectedItem();
         if (!item.isNull() && item.mItem) {
             input.itemMaxUseTicks = item.mItem->getMaxUseDuration(&item);
-            input.itemUseTicks = player.mItemInUse->getUsedDuration(player.getEntityContext());
+            input.itemUseTicks = !active.isNull() ? player.mItemInUse->getUsedDuration(player.getEntityContext())
+                : player.getItemUseDuration();
         }
     }
     auto& level = player.getLevel();
@@ -558,11 +586,15 @@ static std::size_t registerVisualGeometry(AnimationState& state, std::shared_ptr
     // vectors and reused addresses; stable frames reuse the binding table.
     if (!sameMeshes) {
         cached.meshes.clear(); cached.controllers.clear();
-        std::erase_if(state.visualMeshes, [](auto const& entry) { return entry.second.expired(); });
+        std::erase_if(state.visualMeshes, [](auto const& entry) { return entry.second.mesh.expired(); });
     }
     for (auto const& group : *geometry->mSkinnedMeshGroups) for (auto const& mesh : *group.mSkinnedMeshes) {
         if (!sameMeshes) cached.meshes.push_back(mesh);
-        for (auto* controller : controllers) state.visualMeshes[{mesh.get(), controller}] = mesh;
+        for (auto* controller : controllers) {
+            auto& entry = state.visualMeshes[{mesh.get(), controller}];
+            if (!sameParts || entry.mesh.lock() != mesh) entry.parts.clear();
+            entry.mesh = mesh;
+        }
     }
     cached.controllers.insert(controllers.begin(), controllers.end());
     ++state.visualGeometryRefreshes;
@@ -627,16 +659,15 @@ public:
         Pose observedPose;
         if (inventory) {
             ++data->inventoryCalls;
-            auto observation = data->evaluation.forObservation();
+            auto context = data->evaluation.expressions.forObservation();
             auto input = data->entitySnapshot;
             input.renderingInInventory = true;
             auto binder = data->entityQueries;
-            binder.bind(observation.expressions, input);
-            NativeBlockQueryScope blocks(observation.expressions, *player);
-            observation.expressions.keyboardEnabled = false;
-            observation.expressions.pressedKeys.clear();
-            observedPose = data->controllers.observePlayer(data->sampler, observation);
-            auto const& context = observation.expressions;
+            binder.bind(context, input);
+            NativeBlockQueryScope blocks(context, *player);
+            context.keyboardEnabled = false;
+            context.pressedKeys.clear();
+            observedPose = data->controllers.observePlayer(data->sampler, context);
             data->inventoryShoulders = {shoulderLocator(context, true), shoulderLocator(context, false)};
             if (!data->diagnostics.empty()) {
                 data->lastObservation = {{"inventory", context.read("ysm.rendering_in_inventory").number()},
@@ -663,6 +694,10 @@ public:
             nextInput.elytraRotationZ = nativeElytraInput.sample(nativeInputFrame.load(),
                 !firstPerson && !data->paused && data->hasElytraLocator, hands.equipment("chest").id == "minecraft:elytra",
                 nextInput.gliding, nextInput.crouching, nextInput.velocity);
+        }
+        if (data->peerFlight) {
+            nextInput.flying = (*data->peerFlight & 1u) != 0;
+            nextInput.gliding = (*data->peerFlight & 2u) != 0;
         }
         current = nextInput.mainAnimation();
         if (!data->preview.empty()) current = data->preview;
@@ -792,6 +827,16 @@ public:
                 && input.items[0].isLance() && !nativeSpear;
         }
         double sourceYOffset = sourcePlayerRenderYOffset(player->isSneaking(), !firstPerson && !inventory);
+        std::optional<glm::mat4> seat;
+        if (!firstPerson && !inventory) if (auto* vehicle = player->getVehicle()) {
+            if (auto resources = data->seatSource.lock()) {
+                auto alpha = params.mBaseActorRenderContext ? params.mBaseActorRenderContext->mFrameAlpha : 1.f;
+                if (auto world = resources->passengerTransform(*player, *vehicle, alpha, true)) {
+                    auto yaw = glm::rotate(glm::mat4(1), glm::radians(180.f - player->getInterpolatedBodyYaw(alpha)), glm::vec3(0, 1, 0));
+                    seat = glm::transpose(yaw) * *world * yaw;
+                }
+            }
+        }
         auto poseStarted = std::chrono::steady_clock::now();
         for (auto hierarchy = firstMatching; hierarchy != skeletons.end(); ++hierarchy) {
             if (hierarchy != firstMatching && !bindLayout(*hierarchy)) continue;
@@ -865,6 +910,30 @@ public:
                     // Translate the private carrier before its own scale, as
                     // the source renderer translates the entity pose stack.
                     value[0]->y += static_cast<float>(sourceYOffset * 16.0);
+                    if (seat) {
+                        // This private, zero-pivot carrier precedes every author root.
+                        // The body pass can bypass the individual actor dispatcher.
+                        auto const& matrix = *seat;
+                        value[0]->x -= 16.f * matrix[3].x;
+                        value[0]->y += 16.f * matrix[3].y;
+                        value[0]->z += 16.f * matrix[3].z;
+                        glm::mat3 axes(matrix);
+                        glm::vec3 scale(glm::length(axes[0]), glm::length(axes[1]), glm::length(axes[2]));
+                        if (glm::determinant(axes) < 0.f) scale.x = -scale.x;
+                        if (std::abs(scale.x) > 1.e-6f && scale.y > 1.e-6f && scale.z > 1.e-6f) {
+                            for (int i = 0; i < 3; ++i) axes[i] /= scale[i];
+                            float y = std::asin(std::clamp(-axes[0].z, -1.f, 1.f));
+                            bool regular = std::abs(std::cos(y)) > 1.e-5f;
+                            float x = regular ? std::atan2(axes[1].z, axes[2].z) : 0.f;
+                            float z = regular ? std::atan2(axes[0].y, axes[0].x) : std::atan2(-axes[1].x, axes[1].y);
+                            value[1]->x -= glm::degrees(x);
+                            value[1]->y -= glm::degrees(y);
+                            value[1]->z += glm::degrees(z);
+                        }
+                        value[2]->x *= scale.x;
+                        value[2]->y *= scale.y;
+                        value[2]->z *= scale.z;
+                    }
                     value[2]->x *= static_cast<float>(data->width);
                     value[2]->y *= static_cast<float>(data->height);
                     value[2]->z *= static_cast<float>(data->width);
@@ -972,7 +1041,7 @@ public:
                 {"bone_visual_render", drawCosts}, {"transparent_parts", transparentParts},
                 {"bone_visual_bindings", {{"registered", data->visualMeshes.size()},
                     {"geometry_cache_hits", data->visualGeometryCacheHits}, {"geometry_refreshes", data->visualGeometryRefreshes},
-                    {"matches", data->visualDrawMatches}, {"misses", data->visualDrawMisses},
+                    {"matches", data->visualDrawMatches}, {"owner_palette_matches", data->visualDrawRecovered}, {"misses", data->visualDrawMisses},
                     {"samples", data->visualMissSamples}}},
                 {"native_render_stacks", data->nativeRenderStacks},
                 {"state", current}, {"time", seconds}, {"states_seen", data->observedStates},
@@ -1242,7 +1311,7 @@ void AnimationRuntime::relayEnabled(bool enabled) {
     context.networkSync = enabled && !data.remote;
     if (!context.networkSync) context.syncOut.clear();
 }
-RelayPose AnimationRuntime::outgoingPose(std::uint64_t& eventSequence, bool takeEvents) {
+RelayPose AnimationRuntime::outgoingPose(Player const& owner, std::uint64_t& eventSequence, bool takeEvents) {
     RelayPose result;
     if (!impl->state || !impl->state->active) return result;
     auto& data = *impl->state;
@@ -1250,6 +1319,10 @@ RelayPose AnimationRuntime::outgoingPose(std::uint64_t& eventSequence, bool take
     auto& context = data.evaluation.expressions;
     result.texture = data.textureName;
     result.roaming = context.roaming->snapshot();
+    // Local ability flags may not be replicated by Bedrock to observers.
+    // Sample on the game tick even if the owner never renders their body.
+    result.flight = (owner.isFlying() ? 1u : 0u) | (owner.isGliding() ? 2u : 0u);
+    result.formValues = data.uiBindings.snapshotScalars(context);
     result.action = data.extra.name;
     result.actionSerial = data.extra.serial;
     if (!data.extra.name.empty()) {
@@ -1269,6 +1342,7 @@ void AnimationRuntime::applyPeerPose(RelayPose const& peer, std::uint64_t& event
     auto& data = *impl->state;
     std::scoped_lock lock(data.frameMutex);
     data.remote = true;
+    data.peerFlight = peer.flight;
     auto& context = data.evaluation.expressions;
     context.networkSync = false;
     auto const& feet = actor.getFeetPos();
@@ -1281,6 +1355,8 @@ void AnimationRuntime::applyPeerPose(RelayPose const& peer, std::uint64_t& event
         connectRoamingArm(roaming, *data.armEvaluation.expressions.roaming);
         data.cachedPose.clear();
     }
+    if (data.uiBindings.applyScalars(context, data.receivedFormValues, peer.formValues)) data.cachedPose.clear();
+    if (data.receivedFormValues != peer.formValues) data.receivedFormValues = peer.formValues;
     if (replaceAction) {
         data.extra.name = data.sampler.hasClip(peer.action) ? peer.action : std::string();
         data.extraEpoch = std::chrono::steady_clock::now()
@@ -1371,6 +1447,11 @@ void AnimationRuntime::setHostInputs(std::set<int> keys, bool inGame,
     impl->state->modVersions = versions;
     if (newFrame) ++impl->state->renderFrames;
 }
+void AnimationRuntime::trackSeats(std::weak_ptr<NativeReplacedResources> source) {
+    if (!impl->state) return;
+    std::scoped_lock lock(impl->state->frameMutex);
+    impl->state->seatSource = std::move(source);
+}
 void AnimationRuntime::prepareForRender(Player& player, AnimationComponent& component) {
     if (!impl->state || !impl->state->active || &component != &player.getAnimationComponent()) return;
     // Native skin initialization needs its model/render-parameter preparation.
@@ -1440,13 +1521,29 @@ void AnimationRuntime::prepareGeometry(RenderController& controller, std::shared
     ++impl->state->preparationCalls;
 }
 std::span<BoneVisual const> AnimationRuntime::boneVisuals(SkinnedMesh const& mesh, RenderController const* controller,
-    std::span<BoneVisual> local, std::vector<BoneVisual>& overflow) {
+    std::span<BoneVisual> local, std::vector<BoneVisual>& overflow, Actor const* owner) {
     auto state = impl->state;
     if (!state || !state->active || !state->visualMaterials) return {};
     std::scoped_lock lock(state->frameMutex);
     auto prepared = state->visualMeshes.find({&mesh, controller});
     if (prepared == state->visualMeshes.end()) prepared = state->visualMeshes.find({&mesh, nullptr});
-    if (prepared == state->visualMeshes.end() || prepared->second.lock().get() != &mesh) {
+    if (prepared == state->visualMeshes.end() || prepared->second.mesh.lock().get() != &mesh) {
+        // Use transient palette lookup only in this peer's own native draw.
+        // Unattributed draws must never infer the owner from shared bone names.
+        if (owner && owner == impl->target) {
+            auto const& parts = *mesh.mSkinnedParts;
+            if (parts.size() > local.size()) { overflow.resize(parts.size()); local = overflow; }
+            if (resolveOwnedPalette(parts, local, [&](std::string const& name, BoneVisual& output) {
+                auto binding = state->poseBinding(name);
+                if (!binding) return false;
+                output = binding->visual ? *binding->visual : BoneVisual{};
+                output.cutout = state->forceCutout || binding->oneSided;
+                return true;
+            })) {
+                ++state->visualDrawRecovered;
+                return local.first(parts.size());
+            }
+        }
         ++state->visualDrawMisses;
         if (state->visualMissSamples.size() < 4 && std::any_of(mesh.mSkinnedParts->begin(), mesh.mSkinnedParts->end(), [](auto const* part) {
             return part && part->mName->getString().starts_with("__ysm_");
@@ -1470,8 +1567,16 @@ std::span<BoneVisual const> AnimationRuntime::boneVisuals(SkinnedMesh const& mes
         local = overflow;
     }
     auto result = local.first(parts.size());
+    auto& cached = prepared->second.parts;
+    cached.resize(parts.size());
     for (std::size_t i = 0; i < parts.size(); ++i) {
-        auto binding = parts[i] ? state->poseBinding(parts[i]->mName->getString()) : nullptr;
+        // A mesh can replace or reorder its palette without changing its size.
+        // Only the binding is cached; the actor's visual value is read on every draw.
+        auto hash = parts[i] ? parts[i]->mName->getHash() : 0;
+        if (cached[i].part != parts[i] || cached[i].nameHash != hash) {
+            cached[i] = {parts[i], parts[i] ? state->poseBinding(parts[i]->mName->getString()) : nullptr, static_cast<uint64_t>(hash)};
+        }
+        auto binding = cached[i].binding;
         result[i] = binding && binding->visual ? *binding->visual : BoneVisual{};
         result[i].cutout = state->forceCutout || (binding && binding->oneSided);
     }

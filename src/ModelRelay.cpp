@@ -83,6 +83,7 @@ RelayPose readPeer(Json const& document) {
     peer.texture = stringField(document, "texture", 512);
     peer.action = stringField(document, "action", 512);
     peer.serial = numberField(document.at("serial"));
+    readPoseExtras(document, peer);
     peer.actionSerial = numberField(document.at("action_serial"));
     peer.actionTime = document.at("action_time").get<double>();
     if (!playerId(peer.xuid) || !hex(peer.session, 32) || !contentKey(peer.contentKey)
@@ -228,10 +229,12 @@ RelayFrame ModelRelay::exchange(RelayPose const& state, std::uint64_t serial) co
     // Bedrock ActorUniqueIDs can exceed the exact integer range of JSON clients.
     auto shoulders = Json::array();
     for (auto bird : state.shoulderBirds) shoulders.push_back(bird ? Json(std::to_string(bird)) : Json(nullptr));
-    auto body = Json{{"shoulder_birds",std::move(shoulders)}, {"protocol", 1}, {"xuid", state.xuid}, {"session", state.session}, {"serial", serial},
+    auto message = Json{{"shoulder_birds",std::move(shoulders)}, {"protocol", 1}, {"xuid", state.xuid}, {"session", state.session}, {"serial", serial},
         {"model", state.contentKey}, {"texture", state.texture}, {"action", state.action},
         {"action_serial", state.actionSerial}, {"action_time", state.actionTime},
-        {"roaming", state.roaming}, {"events", std::move(events)}, {"receipts", std::move(receipts)}}.dump();
+        {"roaming", state.roaming}, {"events", std::move(events)}, {"receipts", std::move(receipts)}};
+    writePoseExtras(message, state);
+    auto body = message.dump();
     if (body.size() > maxState) throw std::runtime_error("Relay packet exceeds its size limit");
     auto response = Json::parse(request(L"/v1/state", body, 4 << 20));
     if (response.value("protocol", 0) != 1 || response.at("you").get<std::string>() != state.xuid)

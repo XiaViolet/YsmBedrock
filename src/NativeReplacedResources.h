@@ -3,6 +3,7 @@
 #include "MolangRoaming.h"
 #include "ModelEffects.h"
 #include "BoneVisual.h"
+#include <glm/mat4x4.hpp>
 #include <memory>
 #include <mutex>
 class Actor;
@@ -18,7 +19,7 @@ class SkinnedMesh;
 class DataDrivenGeometry;
 namespace ysm {
 // Owns native model and animation resources for assigned entities.
-class NativeReplacedResources {
+class NativeReplacedResources : public std::enable_shared_from_this<NativeReplacedResources> {
     struct Impl;
     struct Storage;
     std::unique_ptr<Storage> storage;
@@ -41,6 +42,7 @@ public:
     void serverTick(Level& level);
     void resolveSavedModels(class ModelLibrary const& library);
     bool hasActiveTarget(Actor const& actor) const;
+    std::optional<glm::mat4> passengerTransform(Actor const& rider, Actor const& vehicle, float alpha, bool customPlayer) const;
     void updateOwner(std::int64_t owner, ModelPack const& pack, RoamingPayload const& roaming);
     void clearOwner(std::int64_t owner);
     void updatePeerOwners(std::span<PeerOwner const> peers);

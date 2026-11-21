@@ -166,7 +166,7 @@ void CodedAnimationPlayer::process(AnimationSampler const& sampler, AnimationLay
         auto const& origin = beginning ? poseAt(from, fromCursor, *bone, denseFrom) : empty;
         auto const& lower = ending || additive ? poseAt(pose, lowerCursor, *bone, denseLower) : empty;
         double progress = endProgress;
-        if (ending && time > endingAt && sampler.hasScaleTrack(name, *bone)) progress = 1;
+        if (ending && time > endingAt && value.driven[2]) progress = 1;
         for (int c = 0; c < 3; ++c) if (value.driven[c]) {
             auto& dst = channel(out, c);
             auto const& source = c == 0 ? value.position : c == 1 ? value.rotation : value.scale;
@@ -243,7 +243,7 @@ void CodedAnimationPlayer::observe(AnimationSampler const& sampler, Pose& pose, 
         auto const& start = channel(origin, c);
         auto const& fallback = channel(lower, c);
         double progress = ending ? std::clamp((lastTime - endingAt) / (3.0 / 20.0), 0.0, 1.0) : 0;
-        if (ending && lastTime > endingAt && sampler.hasScaleTrack(name, *bone)) progress = 1;
+        if (ending && lastTime > endingAt && value.driven[2]) progress = 1;
         if (c == 1 && (beginning || ending)) {
             Triple weighted = source;
             for (auto& axis : weighted) axis *= weight;

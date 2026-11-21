@@ -17,12 +17,15 @@ class ReplacedTargetTests(unittest.TestCase):
         return dict({'match': ['minecraft:boat'], 'model': 'target.json',
                      'animation': 'target.animation.json', 'texture': 'target.png'}, **options)
 
-    def invoke(self, sections=None, inputs=None, files=None, folder=False, error=None, mode='--target-animations'):
+    def invoke(self, sections=None, inputs=None, files=None, folder=False, error=None, mode='--target-animations',
+               variants=None):
         geometry = {'minecraft:geometry': [{'description': {'texture_width': 2, 'texture_height': 2},
                                              'bones': [{'name': 'Root'}]}]}
         descriptor = {'spec': 2, 'files': {'player': {'model': {'main': 'main.json', 'arm': 'main.json'},
                       'animation': {'main': 'player.animation.json'}, 'texture': ['player.png']}}}
         descriptor['files'].update(sections or {})
+        if variants is not None:
+            descriptor['files']['player']['texture'] = variants
         data = {'ysm.json': json.dumps(descriptor).encode(), 'main.json': json.dumps(geometry).encode(),
                 'target.json': json.dumps(geometry).encode(), 'player.png': png(), 'target.png': png(rgba=(1, 2, 3, 255)),
                 'player.animation.json': b'{"animations":{"idle":{"loop":true}}}',
@@ -65,6 +68,36 @@ class ReplacedTargetTests(unittest.TestCase):
         self.assertEqual([t['id'] for t in targets], ['vehicle/0000', 'vehicle/0001'])
         self.assertEqual(targets[0]['matches'], ['minecraft:pig', 'minecraft:boat'])
         self.assertEqual(targets[1]['matches'], ['minecraft:minecart'])
+
+    def test_exported_arrow_texture_belongs_only_to_arrow(self):
+        arrow_path = 'textures/_ARROW_.png'
+        files = {'models/arrow.json': b'{"minecraft:geometry":[{"bones":[{"name":"Root"}]}]}',
+                 arrow_path: png(), 'normal.png': png()}
+        sections = {'projectiles': {'arrow': {'model': 'models/arrow.json'}}}
+        variants = [{'uv': arrow_path, 'normal': 'normal.png'}, 'player.png']
+        for folder in (False, True):
+            with self.subTest(folder=folder):
+                report = self.invoke(sections, files=files, variants=variants, folder=folder)
+                self.assertEqual([t['name'] for t in report['textures']], ['player'])
+                arrow, = report['replaced_targets']
+                self.assertEqual(arrow['matches'], ['arrow'])
+                self.assertEqual((arrow['texture']['path'], arrow['texture']['normal']), (arrow_path, 'normal.png'))
+
+        # An explicit reference wins, even if a player skin has the exporter's name.
+        declared = {'projectiles': {'arrow': {'model': 'models/arrow.json', 'texture': 'target.png'}}}
+        report = self.invoke(declared, files=files, variants=variants)
+        self.assertEqual([t['name'] for t in report['textures']], ['_ARROW_', 'player'])
+        self.assertEqual(report['replaced_targets'][0]['texture']['path'], 'target.png')
+
+    def test_missing_texture_requires_an_unambiguous_exported_arrow(self):
+        arrow_path = 'textures/_ARROW_.png'
+        files = {'models/arrow.json': b'{"minecraft:geometry":[{"bones":[{"name":"Root"}]}]}', arrow_path: png()}
+        for entity, variants in [('arrow', ['player.png']),
+                                 ('arrow', ['player.png', {'uv': arrow_path}, {'uv': arrow_path}]),
+                                 ('trident', ['player.png', {'uv': arrow_path}])]:
+            with self.subTest(entity=entity, variants=variants):
+                self.invoke({'projectiles': {entity: {'model': 'models/arrow.json'}}}, files=files,
+                            variants=variants, error='Missing texture for projectile/0000')
 
     def test_first_matching_target_wins_and_kind_is_not_crossed(self):
         sections = {'vehicles': [self.entry(), self.entry()],

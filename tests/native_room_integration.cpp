@@ -1,5 +1,8 @@
 #include "NativeRoomSync.h"
 #include "ContentHash.h"
+#include "RoomByteRate.h"
+#include "RoomAssets.h"
+#include <mutex>
 #include <array>
 #include <chrono>
 #include <deque>
@@ -29,7 +32,8 @@ void join(std::string const& guest){
 }
 }
 namespace ysm {
-struct RoomTransport::Impl {std::string id;bool live{};};
+struct RoomTransport::Impl {std::string id;bool live{};std::mutex rateMutex;RoomByteRate uploadRate;};
+static std::uint64_t clockMillis(){return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();}
 RoomTransport::RoomTransport():impl(std::make_unique<Impl>()){impl->id=ids.at(nextEndpoint++);}
 RoomTransport::~RoomTransport()=default;
 bool RoomTransport::start(){impl->live=true;return true;}
@@ -40,12 +44,16 @@ void RoomTransport::clientTick(IClientInstance&,Player*){}
 RoomRole RoomTransport::role() const{return !impl->live?RoomRole::None:impl->id=="Host"?RoomRole::Host:RoomRole::Guest;}
 std::string RoomTransport::localId() const{return impl->live?impl->id:"";}
 std::optional<int> RoomTransport::latencyMs() const{return std::nullopt;}
+std::uint64_t RoomTransport::uploadBytesPerSecond() const{
+    std::lock_guard lock(impl->rateMutex);return impl->uploadRate.perSecond(clockMillis());
+}
+std::map<std::string,std::uint64_t> RoomTransport::peerDownloads() const{return {};}
 std::vector<RoomWireEvent> RoomTransport::drain(){
     auto& q=queues[impl->id];std::vector<RoomWireEvent> result;
     while(!q.empty()){result.push_back(std::move(q.front()));q.pop_front();}
     return result;
 }
-bool RoomTransport::send(std::string_view peer,std::span<std::uint8_t const> payload,bool control,std::function<bool()> allowed){
+bool RoomTransport::send(std::string_view peer,std::span<std::uint8_t const> payload,bool control,std::function<bool()> allowed,std::size_t modelBytes){
     if(allowed && !allowed())return true;
     if(drop)return false;
     bool fromHost=impl->id=="Host";
@@ -53,6 +61,8 @@ bool RoomTransport::send(std::string_view peer,std::span<std::uint8_t const> pay
     check(fromHost || peer==roomHostPeer,"guest sent to third party");
     if(!control){
         auto n=payload[0]+256u*payload[1];auto j=Json::parse(payload.begin()+2,payload.begin()+2+n);
+        check(modelBytes==payload.size()-n-2,"inaccurate file payload byte count");
+        std::lock_guard lock(impl->rateMutex);impl->uploadRate.add(clockMillis(),modelBytes);
         ++chunks[{impl->id,target,j.at("sha").get<std::string>()}];
     }
     queues[target].push_back({RoomWireKind::Data,fromHost?std::string(roomHostPeer):impl->id,{payload.begin(),payload.end()}});
@@ -62,18 +72,33 @@ bool RoomTransport::send(std::string_view peer,std::span<std::uint8_t const> pay
 namespace {
 struct Participant{
     NativeRoomSync sync;
-    fs::path root;
+    fs::path root, referenceArchive;
     std::string key,texture,digest,sourceFile;
+    RoomDisplays observations;
     void start(fs::path path){
         root=std::move(path);
-        sourceFile=fs::exists(root/"models"/"current.ysm")?"current.ysm":"current.zip";
-        auto file=root/"models"/sourceFile;
-        auto original=ModelPack::load(file);key=original.localContentKey;texture=original.currentTexture().name;
-        digest=contentFileSha256(file,128ull<<20);sync.start(root);
+        auto models = root / "models";
+        sourceFile = fs::is_directory(models / "current") ? "current" :
+            fs::exists(models / "current.ysm") ? "current.ysm" : "current.zip";
+        auto file = models / sourceFile;
+        {
+            auto original = ModelPack::load(file);
+            key = original.localContentKey;
+            texture = original.currentTexture().name;
+        }
+        referenceArchive = file;
+        if (fs::is_directory(file)) {
+            RoomAssets reference(root / "reference-export");
+            auto exported = reference.publish(file, "reference", true);
+            check(exported.contentKey == key, "room export changed the original directory identity");
+            referenceArchive = reference.readyPath(exported);
+        }
+        digest = contentFileSha256(referenceArchive, RoomAssets::maxFileBytes);
+        sync.start(root);
     }
     void publish(std::string const& who){
         RelayPose p;p.contentKey=key;p.texture=texture;p.action="pose_"+who;p.actionTime=.75;p.actionSerial=1;
-        p.roaming["outfit"]=static_cast<float>(who.size());sync.update(sourceFile,"Same model name",std::move(p),{"Host","Alice","Bea"});
+        p.roaming["outfit"]=static_cast<float>(who.size());sync.update(sourceFile,"Same model name",std::move(p),{"Host","Alice","Bea"},observations);
     }
 };
 void run(fs::path const& root){
@@ -106,7 +131,18 @@ void run(fs::path const& root){
     nodes[0].sync.command("toggle-auto");
     until([&]{auto host=nodes[0].sync.view();return host && host->autoReceive;},"solo host restores policy");
     std::cout<<"PASS solo host retains the same snapshot across 20 local pose submissions and responds to policy changes.\n";
+    // Only the runner's temporary model copy is moved. Keep the same selection and room.
+    const auto wornPath=nodes[1].root/"models"/nodes[1].sourceFile;
+    const auto withheld=nodes[1].root/"withheld-source";
+    fs::rename(wornPath,withheld);
     join("Alice");join("Bea");
+    until([&]{
+        auto v=nodes[1].sync.view();return v && !v->message.empty() && !v->uploadRetryTarget.empty();
+    },"retry entry after a worn model could not be prepared");
+    auto target=nodes[1].sync.view()->uploadRetryTarget;
+    fs::rename(withheld,wornPath);
+    nodes[1].sync.command("retry-upload:"+target);
+    std::cout<<"Retry sender publication with restored source and same selection.\n";
     auto allReady=[&]{
         for(int n=0;n<3;++n){
             auto v=nodes[n].sync.view();
@@ -133,11 +169,30 @@ void run(fs::path const& root){
         }
     }
     auto& a=nodes[1];
-    unsigned expected=static_cast<unsigned>((fs::file_size(a.root/"models"/a.sourceFile)+RoomProtocol::chunkSize-1)/RoomProtocol::chunkSize);
+    unsigned expected=static_cast<unsigned>((fs::file_size(a.referenceArchive)+RoomProtocol::chunkSize-1)/RoomProtocol::chunkSize);
     check(chunks[{"Alice","Host",a.digest}]==expected && chunks[{"Host","Bea",a.digest}]==expected,"incorrect host redistribution");
     std::cout<<"PASS unchanged A archive "<<a.digest<<" in "<<expected<<" chunks A->host and "<<expected<<" chunks host->B. "
         <<"Six remote-ready paths passed disk SHA, ModelPack::loadRoom, texture and presentation identity checks.\n";
     auto cfg=nodes[0].root/"room-sync.json";
+    {
+        auto asset=nodes[0].sync.view()->frame.assets.at(a.key);
+        RoomAssets staging(root/"resume-test");
+        std::ifstream original(a.referenceArchive,std::ios::binary);
+        std::vector<unsigned char> buffer(RoomProtocol::chunkSize);
+        for(std::size_t offset=0;offset<asset.size;){
+            auto length=std::min(asset.size-offset,buffer.size());
+            check(bool(original.read(reinterpret_cast<char*>(buffer.data()),length)),"original model read");
+            if(offset==buffer.size()){
+                staging.pause(asset);
+                check(!staging.has(asset) && staging.reserveTransfer(asset),"paused file treated as complete");
+            }
+            staging.append(asset,offset,std::span(buffer).first(length));offset+=length;
+        }
+        staging.finish(asset);
+        check(contentFileSha256(staging.readyPath(asset),128ull<<20)==asset.digest,"resumed original did not match SHA");
+    }
+    nodes[2].observations["Alice"]={nodes[2].sync.view()->frame.players.at("Alice").session,"awaiting_draw"};
+    until([&]{auto h=nodes[0].sync.view();return h->observers.at("Bea").at("Alice").stage=="awaiting_draw";},"worker displays guest report");
     nodes[0].sync.command("deny:"+a.key);
     until([&]{
         auto h=nodes[0].sync.view(),g=nodes[2].sync.view(),owner=nodes[1].sync.view();
@@ -192,6 +247,18 @@ void run(fs::path const& root){
     until(allReady,"reconnect after solo idle");
     check(chunks==before,"duplicate transfer after reconnect from solo");
     std::cout<<"PASS last departure clears host model bindings; both guests rejoin with cached files.\n";
+    nodes[0].sync.command("deny-once:"+a.key);
+    until([&]{return nodes[0].sync.view()->sessionDenied.contains(a.key) && !nodes[2].sync.view()->frame.players.contains("Alice");},"temporary deny");
+    check(Json::parse(std::ifstream(cfg)).at("denied_content_keys").empty(),"temporary denial persisted");
+    nodes[0].sync.command("reload");nodes[0].sync.command("allow-once:"+a.key);
+    until(allReady,"temporary undo in current room");
+    nodes[0].sync.command("deny-once:"+a.key);nodes[0].sync.command("deny:"+a.key);
+    until([&]{auto h=nodes[0].sync.view();return h->deniedModels.contains(a.key) && h->sessionDenied.empty();},"promote to persistent denial");
+    nodes[0].sync.command("deny-once:"+nodes[2].key);
+    until([&]{return nodes[0].sync.view()->sessionDenied.contains(nodes[2].key);},"second temporary deny");
+    nodes[0].sync.reset();nodes[0].sync.start(nodes[0].root);
+    until([&]{auto h=nodes[0].sync.view();return h && h->deniedModels.contains(a.key) && !h->deniedModels.contains(nodes[2].key) && h->sessionDenied.empty();},"next world retains only persistent scope");
+    std::cout<<"PASS resumed original archive matches SHA; host received guest draw-pending report; temporary undo, promotion and next-room policy boundaries.\n";
     for(auto& n:nodes){n.sync.reset();check(!n.sync.view(),"stale view survived reset");n.sync.stop();}
     std::cout<<"PASS host revocation removes cached user's peer binding, own approval and ready path; restoring scope uses verified disk cache with zero more chunks. World reset clears views.\n";
 }

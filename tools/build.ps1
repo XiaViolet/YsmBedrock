@@ -2,6 +2,7 @@ param([switch]$Test)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $taskOriginalProcessorArchitecture = $env:PROCESSOR_ARCHITECTURE
+$previousInspector = $env:YSM_TEST_INSPECTOR
 if (-not $env:PROCESSOR_ARCHITECTURE) {
     $env:PROCESSOR_ARCHITECTURE = switch ([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()) {
         'X64' { 'AMD64' }
@@ -17,11 +18,24 @@ try {
     if ($LASTEXITCODE -ne 0) { throw '配置失败' }
     & xmake -P $projectRoot -y
     if ($LASTEXITCODE -ne 0) { throw '构建失败' }
+    # Packaging, source installs and the separately built legacy reader all
+    # use this directory. xmake can retain a different builddir per checkout.
+    $targetPaths = @(& xmake lua -P $projectRoot -c 'import("core.project.config"); config.load(); import("core.project.project"); for _,name in ipairs({"YsmBedrock","ysm-inspect"}) do print(project.target(name):targetfile()) end')
+    if ($LASTEXITCODE -ne 0 -or $targetPaths.Count -ne 2) { throw '无法定位本次构建产物' }
+    $release = [IO.Directory]::CreateDirectory((Join-Path $projectRoot 'build/windows/x64/release')).FullName
+    foreach ($targetPath in $targetPaths) {
+        $source = (Get-Item -LiteralPath $targetPath).FullName
+        $destination = Join-Path $release ([IO.Path]::GetFileName($source))
+        if ($source -ne $destination) { Copy-Item -LiteralPath $source -Destination $destination -Force }
+    }
     if ($Test) {
+        $env:YSM_TEST_INSPECTOR = Join-Path $release 'ysm-inspect.exe'
+        Write-Output "使用本次构建运行回归 $env:YSM_TEST_INSPECTOR"
         & py -3 -m unittest discover -s tests -v
         if ($LASTEXITCODE -ne 0) { throw '自动检查失败' }
     }
 } finally {
+    $env:YSM_TEST_INSPECTOR = $previousInspector
     $env:PROCESSOR_ARCHITECTURE = $taskOriginalProcessorArchitecture
     Pop-Location
 }

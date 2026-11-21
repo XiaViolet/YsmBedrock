@@ -111,7 +111,7 @@ bool needsEndingProgress(std::vector<Playback> const& players, double time) {
         return !player.retired && player.endingAt >= 0 && time > player.endingAt && time - player.endingAt < endingLength;
     });
 }
-void accumulate(Pose& output, ClipPose const& sampled, AnimationSampler const& sampler, std::string const& clip,
+void accumulate(Pose& output, ClipPose const& sampled,
     double weight, double elapsedFade, EndingProgress* endings) {
     auto cursor = output.begin();
     bool dense = sampled.size() >= output.size() / 4;
@@ -119,7 +119,7 @@ void accumulate(Pose& output, ClipPose const& sampled, AnimationSampler const& s
     for (auto const& [name, bone] : sampled) {
         if (!bone.driven[0] && !bone.driven[1] && !bone.driven[2]) continue;
         auto& out = outputBone(output, cursor, *name, dense);
-        double progress = elapsedFade > 0 && sampler.hasScaleTrack(clip, *name) ? 1 : fade;
+        double progress = elapsedFade > 0 && bone.driven[2] ? 1 : fade;
         double effectiveWeight = weight * (1 - progress);
         auto* minimum = endings ? &endings->try_emplace(*name, Triple{1, 1, 1}).first->second : nullptr;
         for (int c = 0; c < 3; ++c) if (bone.driven[c]) {
@@ -267,22 +267,12 @@ void bindEquipmentQueries(MolangContext& context, HandInput const& input, bool f
         };
     }
 }
-bool hasArmorCondition(AnimationSampler const& sampler, std::string const& slot) {
-    if (sampler.hasClip(slot + ":default")) return true;
-    return std::any_of(sampler.animationNames().begin(), sampler.animationNames().end(), [&](auto const& name) {
-        return name.starts_with(slot + "$") || name.starts_with(slot + "#");
-    });
-}
 std::optional<AnimationLayer> armorRequest(AnimationSampler const& sampler, std::string const& slot, HandInput const& input) {
     auto const& item = input.equipment(slot);
     if (item.id.empty()) return {};
     auto name = slot + "$" + item.id;
     if (!sampler.hasClip(name)) {
-        name.clear();
-        for (auto const& candidate : sampler.animationNames()) if (candidate.starts_with(slot + "#")) {
-            auto tag = candidate.substr(slot.size() + 1);
-            if (std::find(item.tags.begin(), item.tags.end(), tag) != item.tags.end()) { name = candidate; break; }
-        }
+        name = sampler.conditionalClips().matchingTag(slot, item.tags);
         if (name.empty() && sampler.hasClip(slot + ":default")) name = slot + ":default";
     }
     if (name.empty()) return {};
@@ -295,11 +285,7 @@ std::optional<AnimationLayer> mountRequest(AnimationSampler const& sampler, Hand
     if (!enabled || !mount || !mount->alive) return {};
     auto name = prefix + "$" + mount->id;
     if (!sampler.hasClip(name)) {
-        name.clear();
-        for (auto const& clip : sampler.animationNames()) if (clip.starts_with(prefix + "#")) {
-            auto tag = clip.substr(prefix.size() + 1);
-            if (std::find(mount->tags.begin(), mount->tags.end(), tag) != mount->tags.end()) { name = clip; break; }
-        }
+        name = sampler.conditionalClips().matchingTag(prefix, mount->tags);
         if (name.empty() && prefix == "vehicle") name = mount->legacyAnimation.empty() ? "sit" : mount->legacyAnimation;
     }
     if (name.empty()) return {};
@@ -435,7 +421,7 @@ struct AnimationControllers::Impl {
         for (auto const* slot : EquipmentSlots) {
             auto name = category + ".armor_" + slot;
             bool automatic = std::string_view(slot) != "mainhand" && std::string_view(slot) != "offhand"
-                && hasArmorCondition(sampler, slot);
+                && (sampler.conditionalClips().contains(slot) || sampler.hasClip(std::string(slot) + ":default"));
             if (!automatic && !definitions.contains(name) && sampler.functionLibrary()->events(controllerEvent(name)).empty()) continue;
             auto request = armorRequest(sampler, slot, input);
             stage(name, sampler, time, pose, evaluation, request ? std::span<AnimationLayer const>(&*request, 1) : std::span<AnimationLayer const>{});
@@ -618,7 +604,7 @@ struct AnimationControllers::Impl {
                 ClipPose transitionSample;
                 auto& sampled = blending && !ending ? transitionSample : playback.lastRaw;
                 if (!ending) sampler.sampleRawClip(sampled, pose, choice.name, clipTime, context);
-                accumulate(instance.output, sampled, sampler, choice.name, weight,
+                accumulate(instance.output, sampled, weight,
                     ending ? time - playback.endingAt : 0, fadeToLower ? &endingProgress : nullptr);
             }
             if (blending) {
@@ -689,7 +675,7 @@ struct AnimationControllers::Impl {
             double weight = sampler.blendWeight(choice.name, clock, context);
             ClipPose sampled;
             if (!ending) sampler.sampleRawClip(sampled, pose, choice.name, clock, context);
-            accumulate(output, ending ? playback.lastRaw : sampled, sampler, choice.name, weight,
+            accumulate(output, ending ? playback.lastRaw : sampled, weight,
                 ending ? instance.lastTime - playback.endingAt : 0, fadeToLower ? &endingProgress : nullptr);
         }
         if (blending) {
@@ -1118,8 +1104,7 @@ Pose AnimationControllers::sampleReplaced(AnimationSampler const& sampler, Repla
     context.finishFrame();
     return result;
 }
-Pose AnimationControllers::observePlayer(AnimationSampler const& sampler, AnimationEvaluation& observation) const {
-    auto& context = observation.expressions;
+Pose AnimationControllers::observePlayer(AnimationSampler const& sampler, MolangContext& context) const {
     if (!context.observation) throw std::runtime_error("Player observation requires an observation context");
     if (impl->playerTime < 0) return {};
     MolangActionScope permission(context, false);

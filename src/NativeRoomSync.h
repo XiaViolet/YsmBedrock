@@ -10,9 +10,14 @@ struct RoomView {
     std::map<std::string,std::string> states, peerStates;
     std::vector<RoomOffer> offers;
     std::map<std::string,std::string> deniedModels;
-    std::string message;
+    std::set<std::string> sessionDenied;
+    std::map<std::string,RoomProgress> progress;
+    std::map<std::string,RoomDisplays> observers;
+    std::string message, uploadRetryTarget;
     bool connected{}, autoReceive=true;
     std::uint64_t acceptedTxBytes{}, receivedBytes{};
+    std::uint64_t uploadRate{}, downloadRate{}, rateLimit{};
+    RoomPeerRates peerRates;
 };
 // The client tick owns transport I/O. The serial worker owns the protocol,
 // authorization and disk cache. Only copied values cross this boundary.
@@ -34,7 +39,7 @@ public:
     std::string localId() const;
     std::optional<int> latencyMs() const;
     std::shared_ptr<RoomView const> view() const;
-    void update(std::string source, std::string title, RelayPose pose, std::set<std::string> visible);
+    void update(std::string source, std::string title, RelayPose pose, std::set<std::string> visible, RoomDisplays displays={});
     void command(std::string command);
 };
 }

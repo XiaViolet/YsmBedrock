@@ -397,32 +397,61 @@ UiScene YsmUi::draw(float width,float height, float hotbarTop) {
             button({cx+285,top,130,30},"重读共享设置","room:reload");
             auto active=data.room.value("active",false);
             auto host=data.room.value("host",false);
-            if(host)button({cx+424,top,220,30},data.room.value("auto_receive",true)?"自动接收当前模型 · 开":"自动接收当前模型 · 关","room:toggle-auto");
+            if(host){
+                button({cx+424,top,167,30},data.room.value("auto_receive",true)?"自动接收 · 开":"自动接收 · 关","room:toggle-auto");
+                button({cx+600,top,125,30},observersOpen?"返回玩家":"客端显示回报","room_observers",observersOpen);
+            }
             else p.text(cx+430,top+9,287,active?"已连接房主":"等待兼容的房间连接",muted,.85f);
             auto offers=data.room.value("offers",Json::array());
             auto denied=host?data.room.value("denied",Json::array()):Json::array();
+            auto reports=data.room.value("observations",Json::array());
+            bool showReports=host && observersOpen;
             constexpr std::size_t rows=5;
-            auto count=data.players.size()+denied.size()+offers.size();
+            auto count=showReports?reports.size():data.players.size()+denied.size()+offers.size();
             auto pages=std::max<std::size_t>(1,(count+rows-1)/rows);
             playerPage%=pages;
             std::string notice=str(data.room,"message");
+            if(showReports)notice=count?"由各客端回报该玩家的模型显示状态。":"等待客端加入并接收玩家模型。";
             if(notice.empty() && !count)notice="房主开放的模型会自动下载。";
-            p.text(cx,top+45,cw,fit(notice,cw,.85f),muted,.85f);
+            auto noticeWidth=active?cw-275:cw;
+            p.text(cx,top+45,noticeWidth,fit(notice,noticeWidth,.85f),muted,.85f);
+            if(active){
+                auto speed="本机上传 "+std::to_string(data.room.value("upload_bps",0u)/1024)+" KiB/s · 下载 "
+                    +std::to_string(data.room.value("download_bps",0u)/1024)+" KiB/s";
+                p.text(cx+cw-268,top+45,268,speed,ink,.85f);
+                auto uploadTarget=str(data.room,"upload_retry");
+                if(!uploadTarget.empty())button({cx,437,145,29},"重新上传我的模型","room:retry-upload:"+uploadTarget);
+                auto limit="本机限速 "+std::to_string(data.room.value("rate_limit",0u)/1024)+" KiB/s";
+                button({cx+cw-160,437,160,29},limit,"room:cycle-rate");
+            }
             for(std::size_t i=0;i<rows && playerPage*rows+i<count;++i){
                 auto index=playerPage*rows+i;auto y=top+68+i*48;
                 p.border({cx,y,cw,42},edge,white,7);
-                if(index<data.players.size()){
+                if(showReports){
+                    p.text(cx+16,y+13,cw-32,fit(reports.at(index).get<std::string>(),cw-32,1),ink,1);
+                }else if(index<data.players.size()){
                     auto const& peer=data.players[index];auto hidden=peer.value("hidden",false);
-                    p.text(cx+16,y+13,cw-275,fit(str(peer,"name")+"  ·  "+str(peer,"state"),cw-275,1),ink,1);
+                    auto width=host?cw-392:cw-223;
+                    auto rates=str(peer,"rates");
+                    float rateWidth=rates.empty()?0:165;
+                    p.text(cx+16,y+4,width-rateWidth,fit(str(peer,"name"),width-rateWidth,.96f),ink,.96f);
+                    if(!rates.empty())p.text(cx+16+width-rateWidth,y+5,rateWidth,rates,muted,.80f);
+                    p.text(cx+16,y+23,width,fit(str(peer,"state"),width,.87f),muted,.87f);
                     auto key=str(peer,"key");
-                    if(host && !key.empty())button({cx+cw-255,y+6,110,30},"拒绝此模型","room:deny:"+key);
-                    button({cx+cw-137,y+6,121,30},hidden?"本机显示":"本机屏蔽","peer:"+str(peer,"id"),hidden);
+                    if(host && !key.empty()){
+                        button({cx+cw-274,y+6,80,30},"本场拒绝","room:deny-once:"+key);
+                        button({cx+cw-190,y+6,88,30},"长期拒绝","room:deny:"+key);
+                    }
+                    if(peer.value("retry",false))button({cx+cw-(host?369:187),y+6,87,30},"重新下载","room:retry:"+str(peer,"stream")+"|"+str(peer,"id"));
+                    button({cx+cw-96,y+6,84,30},hidden?"本机显示":"本机屏蔽","peer:"+str(peer,"id"),hidden);
                 }else if(index<data.players.size()+denied.size()){
                     auto const& model=denied[index-data.players.size()];
                     auto key=str(model,"key"),title=str(model,"title");
-                    auto label="房间已拒绝 · "+(title.empty()?std::string{}:title+" · ")+key.substr(7,12);
-                    p.text(cx+16,y+13,cw-168,fit(label,cw-168,1),ink,1);
-                    button({cx+cw-137,y+6,121,30},"重新允许","room:allow:"+key);
+                    bool temporary=model.value("temporary",false);
+                    auto label=std::string(temporary?"本场已拒绝 · ":"长期已拒绝 · ")+(title.empty()?std::string{}:title+" · ")+key.substr(7,12);
+                    p.text(cx+16,y+13,cw-255,fit(label,cw-255,1),ink,1);
+                    if(temporary)button({cx+cw-244,y+6,102,30},"改为长期拒绝","room:deny:"+key);
+                    button({cx+cw-137,y+6,121,30},"重新允许",std::string(temporary?"room:allow-once:":"room:allow:")+key);
                 }else{
                     auto const& offer=offers[index-data.players.size()-denied.size()];
                     p.text(cx+16,y+13,480,fit(str(offer,"title"),480,1),ink,1);
@@ -434,8 +463,13 @@ UiScene YsmUi::draw(float width,float height, float hotbarTop) {
             struct Setting {char const* label;char const* description;char const* key;};
             Setting controls[]={{"使用原版外观","关闭自己的 YSM 模型替换","disable_self_model"},{"使用原版手臂","仅恢复第一人称手臂","disable_self_hands"},{"屏蔽投射物模型","恢复箭等投射物的原版外观","disable_projectile_model"},{"屏蔽载具模型","恢复船与矿车的原版外观","disable_vehicle_model"},{"动作提示","显示转盘动作名称","print_animation_roulette_msg"},{"移动时保留动作","关闭后，走动、跳跃或潜行会停止额外动作","movement_lock"},{"屏蔽其他玩家","恢复其他玩家的原版外观","disable_other_models"},{"角色小窗","在游戏画面显示自己的动作","show_hud_avatar"}};
             for(std::size_t i=0;i<std::size(controls);++i){auto const& c=controls[i];UiRect r{cx+static_cast<float>(i%2)*371,top+static_cast<float>(i/2)*55,354,49};auto id="setting:"+std::string(c.key);p.border(r,edge,white,9);p.text(r.x+16,r.y+8,240,c.label,ink,1.02f);p.text(r.x+16,r.y+28,254,c.description,muted,.78f);toggle({r.x+r.w-56,r.y+13,40,21},id,data.settings.value(c.key,false),r);}
-            p.text(cx+16,top+365,210,"原生网格预览",ink,1);
-            toggle({cx+267,top+357,40,21},"setting:native_menu_preview",data.settings.value("native_menu_preview",true),UiRect{cx,top+355,354,28});
+            auto option = [&](float x, char const* label, char const* key, bool initial) {
+                p.text(x+12,top+365,165,label,ink,.95f);
+                toggle({x+177,top+357,40,21},"setting:"+std::string(key),data.settings.value(key,initial),UiRect{x,top+355,229,28});
+            };
+            option(cx, "原生网格预览", "native_menu_preview", true);
+            option(cx+247, "鼠标兼容模式", "relative_menu_pointer", false);
+            option(cx+494, "Arke 附加发光层", "arke_extra_emissive_layer", false);
             p.box({cx,top+224,cw,130},white,9);
             p.text(cx+16,top+234,96,"模型音量",ink,1);
             p.text(cx+367,top+234,168,"纸娃娃帧率  "+std::to_string(data.settings.value("hud_fps",30)),ink,.95f);

@@ -33,7 +33,7 @@ public:
     static bool supports(Model const& original);
     static NativeModelInstance createTarget(DataDrivenModel const& original,
         std::shared_ptr<GeometryInfo> const& geometry, std::set<std::string> const& bones,
-        std::string const& identity);
+        std::string const& identity, float drawScale);
     static std::shared_ptr<ActorRenderer> createRenderer(NativeModelInstance const& instance,
         std::shared_ptr<mce::TextureGroup> const& textures);
 };

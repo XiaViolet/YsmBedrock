@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
@@ -39,10 +40,12 @@ public:
     void clientTick(IClientInstance& client, Player* local);
     RoomRole role() const;
     std::optional<int> latencyMs() const;
+    std::uint64_t uploadBytesPerSecond() const;
+    std::map<std::string,std::uint64_t> peerDownloads() const;
     std::string localId() const;
     std::vector<RoomWireEvent> drain();
     bool send(std::string_view peer, std::span<std::uint8_t const> payload, bool control = true,
-              std::function<bool()> authorized = {});
+              std::function<bool()> authorized = {}, std::size_t modelBytes=0);
 private:
     struct Impl;
     std::unique_ptr<Impl> impl;

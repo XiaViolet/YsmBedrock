@@ -5,8 +5,7 @@ import subprocess
 import tempfile
 import unittest
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
-INSPECT = ROOT / "build/windows/x64/release/ysm-inspect.exe"
+from inspector import EXE as INSPECT
 
 
 class ShoulderLocatorTests(unittest.TestCase):

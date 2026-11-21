@@ -1,5 +1,6 @@
 #pragma once
 #include "ModelPack.h"
+#include "ConditionalClips.h"
 #include "Molang.h"
 #include <array>
 #include <map>
@@ -79,11 +80,6 @@ struct AnimationEvaluation {
     double lastTime = -1;
     BonePoseHistory poseHistory;
     bool functionsInitialized = false;
-    AnimationEvaluation forObservation() const {
-        auto result = *this;
-        result.expressions = expressions.forObservation();
-        return result;
-    }
 };
 class AnimationSampler {
     bool legacyMolang = false;
@@ -109,7 +105,7 @@ class AnimationSampler {
         std::optional<MolangProgram> weight;
     };
     std::map<std::string, Clip> clips;
-    std::vector<std::string> clipOrder;
+    ConditionalClips conditions;
     std::set<std::string> headBones;
     std::map<std::string, Triple> initialRotations;
     std::shared_ptr<MolangContext::BoneRig const> boneRig;
@@ -138,14 +134,13 @@ public:
     void sampleRawClip(ClipPose& sampled, Pose const& lower, std::string const& name,
         double time, MolangContext& context) const;
     double blendWeight(std::string const& name, double time, MolangContext& context) const;
-    bool hasScaleTrack(std::string const& name, std::string const& bone) const;
     Triple blendRotation(std::string const& bone, Triple const& begin, Triple const& end, double progress) const {
         auto found = initialRotations.find(bone);
         return sourceRotationLerp(begin, end, found == initialRotations.end() ? Triple{} : found->second, progress);
     }
     void finishPose(Pose& pose, MolangContext& context, bool codedHead = true) const;
     void recoverHeadPose(Pose const& authored, MolangContext& context) const;
-    std::span<std::string const> animationNames() const { return clipOrder; }
+    ConditionalClips const& conditionalClips() const { return conditions; }
     void resetUndriven(Pose& pose, double time, BonePoseHistory& history, double resetSeconds = 3.0 / 20.0) const;
     std::optional<AnimationClipInfo> clipInfo(std::string const& name, AnimationLoop loop = AnimationLoop::Authored) const;
     bool hasClip(std::string const& name) const { return clips.contains(name); }

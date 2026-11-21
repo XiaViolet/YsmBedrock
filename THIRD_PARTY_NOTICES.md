@@ -1,5 +1,6 @@
 # 来源
 
+- 魔法酒狐含正式版原包的 24 个文件，作者为星海境和伊蕾娜教代行教皇，按 CC BY-NC-SA 4.0 分发。[来源和署名](licenses/magical-wine-fox-source.json)
 - 随包内置 Wine Fox（酒狐）基础款。43 个资源文件逐字节取自 Java YSM 2.6.5 Fabric 1.21.1 正式版；仅重新装入 ZIP。完整作者署名保留在原始 `ysm.json`，并附在[资源记录](licenses/wine-fox-source.json)中。该模型按 CC BY-NC-SA 4.0 分发，含此模型的公开包按非商业用途发布。[官方发行页](https://modrinth.com/mod/yes-steve-model/version/eGOUtHWJ) · [模型许可](https://creativecommons.org/licenses/by-nc-sa/4.0/)
 - 绘梨衣为开发者自行提供的回归样本。
 - YSM：<https://github.com/YesSteveModel/YesSteveModel>，参考提交 `15c2c25f5b50f54ee099bc474483dc4b588d956d`。Head 定位器、控制器状态机、内置播放器、骨骼复位、函数/控制器覆盖、defer 回调、本地 sync 独立交付轮、动作混合、纹理声明及时间线语义对照此提交改编为 C++。

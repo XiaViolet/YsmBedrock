@@ -14,7 +14,7 @@ namespace fs = std::filesystem;
 namespace {
 using Clock = std::chrono::steady_clock;
 constexpr auto maxBacklog = 2u << 20;
-struct LocalState { std::string source, title; RelayPose pose; std::set<std::string> visible; };
+struct LocalState { std::string source, title; RelayPose pose; std::set<std::string> visible; RoomDisplays displays; };
 struct Settings {
     RoomRules rules;
     std::uint64_t capacity{};
@@ -23,7 +23,7 @@ struct Settings {
 Settings settings(fs::path const& root) {
     auto file = root / "room-sync.json";
     Json defaults{{"auto_receive_current",true},{"shared_only",false},{"denied_content_keys",Json::array()},
-        {"shared_models",Json::array()},{"bytes_per_second",262144},{"cache_mib",512}};
+        {"shared_models",Json::array()},{"bytes_per_second",RoomRules::defaultBytesPerSecond},{"cache_mib",512}};
     if (!fs::exists(file)) {
         std::ofstream out(file);
         if (!(out << defaults.dump(2))) throw std::runtime_error("Cannot create room-sync.json");
@@ -33,7 +33,7 @@ Settings settings(fs::path const& root) {
     Settings result;
     result.rules.autoReceiveCurrent=j.value("auto_receive_current",true);
     result.rules.sharedOnly=j.value("shared_only",false);
-    result.rules.bytesPerSecond=std::clamp(j.value("bytes_per_second",262144),16384,4<<20);
+    result.rules.bytesPerSecond=std::clamp(j.value("bytes_per_second",RoomRules::defaultBytesPerSecond),16384,4<<20);
     result.capacity=static_cast<std::uint64_t>(std::clamp(j.value("cache_mib",512),128,8192))<<20;
     result.rules.deniedKeys=j.value("denied_content_keys",std::set<std::string>{});
     result.shares=j.value("shared_models",std::vector<std::string>{});
@@ -95,9 +95,10 @@ struct NativeRoomSync::Impl {
         std::vector<PublishJob> publications;
         std::vector<VerifyJob> verifications;
         std::uint64_t sourceRevision{},shareRevision{};
-        bool autoReceive=true;
+        RoomRules activeRules;
         std::map<std::string,std::pair<std::string,fs::path>> readyFiles;
         auto checkPaths=Clock::now();
+        auto nextRates=Clock::time_point{};
         fs::path pendingSource;
         std::string pendingTitle;
         auto done=[](Job& f){return f.wait_for(std::chrono::seconds(0))==std::future_status::ready;};
@@ -123,9 +124,14 @@ struct NativeRoomSync::Impl {
             auto congested=outgoingBytes>maxBacklog-(256u<<10) || output.size()>440;
             lock.unlock();
             try {
+                auto applyRules=[&](RoomRules rules){
+                    rules.sessionDenied=activeRules.sessionDenied;
+                    for(auto const& k:rules.deniedKeys)rules.sessionDenied.erase(k);
+                    room->setRules(rules);activeRules=std::move(rules);
+                };
                 auto refresh=[&]{
                     auto cfg=settings(root);
-                    room->setRules(cfg.rules); autoReceive=cfg.rules.autoReceiveCurrent;files->setCapacity(cfg.capacity);
+                    applyRules(cfg.rules);files->setCapacity(cfg.capacity);
                     ++shareRevision;shares.clear(); shareWork.clear(); room->share({});
                     for (auto const& s:cfg.shares) {
                         try { shareWork.push_back(libraryPath(root/"models",s)); }
@@ -141,7 +147,7 @@ struct NativeRoomSync::Impl {
                     }
                 };
                 if (gen!=live) {
-                    room.reset();pendingSource.clear();readyFiles.clear();
+                    room.reset();activeRules={};pendingSource.clear();readyFiles.clear();
                     if(files){files->clearTransfers();files->pin({});}
                     live=gen; source.clear(); key.clear(); current.reset(); shares.clear(); shareWork.clear(); pendingCollect.clear();message.clear();
                     if(next!=RoomRole::None && !who.empty()) {
@@ -150,6 +156,8 @@ struct NativeRoomSync::Impl {
                         io.has=[&](auto const& a){return files->has(a) || files->reuseLibrary(a, root/"models");};
                         io.read=[&](auto const& a,auto o,auto n){return files->read(a,o,n);};
                         io.append=[&](auto const& a,auto o,auto b){files->append(a,o,b);};
+                        io.pause=[&](auto const& a){files->pause(a);};
+                        io.reserve=[&](auto const& a){return files->reserveTransfer(a);};
                         io.finish=[&](auto const& a){
                             if(verifications.size()>=8)throw std::runtime_error("Room verification queue is full");
                             verifications.push_back({{},live,a});
@@ -169,7 +177,7 @@ struct NativeRoomSync::Impl {
                             files->cancel(a);
                         };
                         room=std::make_unique<RoomProtocol>(next==RoomRole::Host,who,ModelRelay::newSession(),std::move(io));
-                        try {refresh();} catch(std::exception const& e) {RoomRules closed; closed.sharedOnly=true; closed.autoReceiveCurrent=false; autoReceive=false;room->setRules(closed);message=e.what();}
+                        try {refresh();} catch(std::exception const& e) {RoomRules closed; closed.sharedOnly=true; closed.autoReceiveCurrent=false;applyRules(closed);message=e.what();}
                     }
                 }
                 std::erase_if(verifications,[&](auto& v){return (v.generation!=live || v.cancelled) && (!v.task.valid() || done(v.task));});
@@ -195,18 +203,32 @@ struct NativeRoomSync::Impl {
                 }
                 for(auto const& task:tasks){
                     if(task=="reload"){refresh();source.clear();}
-                    else if(next==RoomRole::Host && (task=="toggle-auto" || task.starts_with("deny:") || task.starts_with("allow:"))){
+                    else if(next==RoomRole::Host && (task.starts_with("deny-once:") || task.starts_with("allow-once:"))){
+                        auto rules=activeRules;
+                        if(task.starts_with("deny-once:")){
+                            auto k=task.substr(10);
+                            if(!room->frame().assets.contains(k))continue;
+                            if(rules.sessionDenied.size()>=256)throw std::runtime_error("Session deny list is full");
+                            rules.sessionDenied.insert(k);
+                        }else if(!rules.sessionDenied.erase(task.substr(11)))continue;
+                        room->setRules(rules);activeRules=std::move(rules);
+                    }
+                    else if(task=="cycle-rate" || (next==RoomRole::Host && (task=="toggle-auto" || task.starts_with("deny:") || task.starts_with("allow:")))){
                         auto path=root/"room-sync.json";
                         if(fs::file_size(path)>65536)throw std::runtime_error("Room settings are too large");
                         auto config=Json::parse(std::ifstream(path));
-                        if(task=="toggle-auto")config["auto_receive_current"]=!autoReceive;
+                        if(task=="cycle-rate"){
+                            constexpr std::size_t presets[]={256u<<10,1u<<20,2u<<20,4u<<20};
+                            auto nextRate=std::ranges::upper_bound(presets,activeRules.bytesPerSecond);
+                            config["bytes_per_second"]=nextRate==std::end(presets)?presets[0]:*nextRate;
+                        }else if(task=="toggle-auto")config["auto_receive_current"]=!activeRules.autoReceiveCurrent;
                         else{
                             auto keys=config.value("denied_content_keys",std::set<std::string>{});
                             if(task.starts_with("allow:")){
                                 if(!keys.erase(task.substr(6)))continue;
                             }else{
                                 auto k=task.substr(5);
-                                if(!room->frame().assets.contains(k) || keys.contains(k))continue;
+                                if((!room->frame().assets.contains(k) && !activeRules.sessionDenied.contains(k)) || keys.contains(k))continue;
                                 if(keys.size()>=256)throw std::runtime_error("Room deny list is full");
                                 keys.insert(k);
                             }
@@ -218,7 +240,26 @@ struct NativeRoomSync::Impl {
                         {std::ofstream out(temp,std::ios::binary);out<<encoded;out.close();if(!out)throw std::runtime_error("Cannot save room rules");}
                         std::error_code ec;fs::rename(temp,path,ec);
                         if(ec){fs::remove(temp);throw std::runtime_error("Cannot replace room-sync.json");}
-                        auto cfg=settings(root);room->setRules(cfg.rules);autoReceive=cfg.rules.autoReceiveCurrent;
+                        applyRules(settings(root).rules);
+                    }
+                    else if(task.starts_with("retry:") && task.size()>39 && task[38]=='|'){
+                        auto id=task.substr(39),streamId=task.substr(6,32);
+                        auto wearer=room->frame().players.find(id);
+                        if(wearer!=room->frame().players.end() && wearer->second.session==streamId){
+                            readyFiles.erase(wearer->second.contentKey);room->retry(id,streamId);
+                            message="已请求重新下载玩家模型";
+                        }
+                    }
+                    else if(task.starts_with("retry-upload:") && haveEndpoints && room->connected()
+                        && !key.empty() && task.substr(13)==room->session()+"|"+key){
+                        if(current && room->canRetryUpload()){
+                            room->retryUpload();message="已请求重新上传当前模型";
+                        }else if(!current && pendingSource.empty() && !std::ranges::any_of(publications,[&](auto const& job){
+                            return job.worn && job.generation==live && job.revision==sourceRevision;
+                        })){
+                            // The next local snapshot retries the original import and authorization checks.
+                            source.clear();message="正在重新准备上传文件";
+                        }
                     }
                     else if(task.starts_with("select:"))room->select(task.substr(7));
                     else if(task.starts_with("collect:")){
@@ -251,8 +292,13 @@ struct NativeRoomSync::Impl {
                         } catch(std::exception const& e){message=e.what();}
                     }
                     room->setVisible(std::move(state->visible));room->publish(current,std::move(state->pose));
+                    room->reportDisplays(state->displays);
                 }
                 std::vector<RoomWire> batch;
+                if(next==RoomRole::Host && haveEndpoints && Clock::now()>=nextRates){
+                    room->updateRates(wire.peerDownloads(),wire.uploadBytesPerSecond(),ms);
+                    nextRates=Clock::now()+std::chrono::seconds(1);
+                }
                 if(!congested) batch=room->tick(ms);
                 // Keep a CPU lane available for a newly visible/current model while
                 // one lower-priority archive is being verified.
@@ -279,7 +325,15 @@ struct NativeRoomSync::Impl {
                 }
                 auto view=std::make_shared<RoomView>();view->frame=room->frame();view->states=room->statuses();
                 view->peerStates=room->peerStates();view->offers=room->offers();view->connected=room->connected();
+                if(haveEndpoints && view->connected && !key.empty() && (room->canRetryUpload() || (!current && pendingSource.empty()
+                    && !std::ranges::any_of(publications,[&](auto const& job){return job.worn && job.generation==live && job.revision==sourceRevision;}))))
+                    view->uploadRetryTarget=room->session()+"|"+key;
                 view->deniedModels=room->deniedModels();
+                view->sessionDenied=activeRules.sessionDenied;
+                view->progress=room->progress();view->observers=room->observers();
+                view->downloadRate=room->downloadBytesPerSecond();view->uploadRate=wire.uploadBytesPerSecond();
+                view->rateLimit=activeRules.bytesPerSecond;
+                view->peerRates=room->peerRates();
                 std::set<std::string> pins;
                 if(current)pins.insert(current->digest);
                 for(auto const& a:shares)pins.insert(a.digest);
@@ -306,7 +360,7 @@ struct NativeRoomSync::Impl {
                         message="已收藏 "+filename(files->collect(a->second,root/"models"));
                     }
                 }
-                view->autoReceive=autoReceive;view->message=message;
+                view->autoReceive=activeRules.autoReceiveCurrent;view->message=message;
                 lock.lock();
                 if(generation==gen){
                     view->acceptedTxBytes=acceptedTx;view->receivedBytes=received;latest.store(std::move(view));
@@ -387,7 +441,7 @@ void NativeRoomSync::tick(IClientInstance& client,Player* player){
             if(blocked.contains(peer)){++it;continue;}
             std::function<bool()> guard;
             if(it->permit)guard=[flag=it->permit]{return flag->load(std::memory_order_acquire);};
-            if(!impl->wire.send(peer,item.bytes,control,std::move(guard))){
+            if(!impl->wire.send(peer,item.bytes,control,std::move(guard),item.modelBytes)){
                 blocked.insert(peer);++it;continue;
             }
             ++sent;impl->acceptedTx+=item.bytes.size();impl->outgoingBytes-=item.bytes.size();it=impl->output.erase(it);
@@ -401,10 +455,10 @@ bool NativeRoomSync::hasEndpoints()const{std::lock_guard lock(impl->mutex);retur
 bool NativeRoomSync::backpressured()const{std::lock_guard lock(impl->mutex);return impl->local.has_value();}
 std::string NativeRoomSync::localId()const{return impl->self;}
 std::shared_ptr<RoomView const> NativeRoomSync::view()const{return impl->latest.load();}
-void NativeRoomSync::update(std::string source,std::string title,RelayPose pose,std::set<std::string> visible){
+void NativeRoomSync::update(std::string source,std::string title,RelayPose pose,std::set<std::string> visible,RoomDisplays displays){
     std::lock_guard lock(impl->mutex);
     if(impl->endpoints.empty())return;
-    impl->local=LocalState{std::move(source),std::move(title),std::move(pose),std::move(visible)};impl->wake.notify_one();
+    impl->local=LocalState{std::move(source),std::move(title),std::move(pose),std::move(visible),std::move(displays)};impl->wake.notify_one();
 }
 void NativeRoomSync::command(std::string cmd){
     if(cmd.size()>2048)return;

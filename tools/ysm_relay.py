@@ -81,7 +81,22 @@ def player_state(data, owner, models, allowed):
     action_time = finite_f32(data.get("action_time", 0))
     if not 0 <= action_time <= 86400:
         raise ValueError("Invalid animation time")
-    return dict(xuid=owner, session=session, serial=serial, model=key,
+    extra = {}
+    if "flight" in data:
+        flight = data["flight"]
+        if type(flight) is not int or not 0 <= flight <= 3:
+            raise ValueError("Invalid flight state")
+        extra["flight"] = flight
+    forms = data.get("form_values", {})
+    if not isinstance(forms, dict) or len(forms) > 128:
+        raise ValueError("Invalid form state")
+    for name, value in forms.items():
+        if len(name.encode("utf8")) > 96 or not name.startswith("variable.") or name.startswith("variable.roaming."):
+            raise ValueError("Invalid form field")
+        finite_f32(value)
+    if forms:
+        extra["form_values"] = forms
+    return dict(**extra, xuid=owner, session=session, serial=serial, model=key,
                 texture=bounded_string(data.get("texture", ""), 512),
                 action=bounded_string(data.get("action", ""), 512),
                 action_serial=counter(data.get("action_serial", 0)), action_time=action_time,

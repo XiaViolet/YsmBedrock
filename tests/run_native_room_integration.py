@@ -13,15 +13,15 @@ import time
 
 repo = Path(__file__).resolve().parents[1]
 arg = argparse.ArgumentParser()
-arg.add_argument("--original", type=Path, help="Existing publisher-authorized, unmodified source ZIP used by Alice")
+arg.add_argument("--original", type=Path, help="Existing publisher-authorized, unmodified model directory or archive used by Alice")
 arg.add_argument("--guest-b-original", type=Path, help="Optional unmodified authorized .zip or .ysm for the second guest")
 arg.add_argument("--build-dir", type=Path, default=repo/"build", help="Existing release xmake build output, including .objs and .deps")
 arg.add_argument("--output", type=Path, default=repo / "build/verification/room-0.29.19")
 arg.add_argument("--scratch", type=Path, help="Optional parent directory for temporary build and caches")
 options = arg.parse_args()
 original = options.original or next(iter((repo.parents[1] / "素材/原始包").glob("*绘梨衣*.zip")), None)
-if original is None or not original.is_file():
-    arg.error("Set --original to the unmodified YSM source model ZIP")
+if original is None or not (original.is_dir() or original.is_file()):
+    arg.error("Set --original to an existing YSM model directory or archive")
 output = options.output.resolve()
 output.mkdir(parents=True, exist_ok=True)
 release = options.build_dir.resolve()
@@ -78,9 +78,13 @@ with tempfile.TemporaryDirectory(prefix="ysm-native-room-", dir=options.scratch)
             _winapi.CreateJunction(str(managed), str(testdir / endpoint))
             lines.append("Bea uses a launcher-managed directory junction.")
         directory.mkdir(parents=True, exist_ok=True)
-        dest = directory / ("current"+asset.suffix.lower())
-        shutil.copyfile(asset, dest)
-        lines.append(f"{endpoint}: {asset.name}, {dest.stat().st_size} bytes, SHA256 {hashlib.sha256(dest.read_bytes()).hexdigest()}")
+        if asset.is_dir():
+            shutil.copytree(asset, directory / "current")
+            lines.append(f"{endpoint}: {asset.name}, original directory")
+        else:
+            dest = directory / ("current"+asset.suffix.lower())
+            shutil.copyfile(asset, dest)
+            lines.append(f"{endpoint}: {asset.name}, {dest.stat().st_size} bytes, SHA256 {hashlib.sha256(dest.read_bytes()).hexdigest()}")
     started = time.monotonic()
     run = subprocess.run([exe, testdir], cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180)
     result = run.stdout.decode("utf-8", errors="replace")

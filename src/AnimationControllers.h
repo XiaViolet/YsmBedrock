@@ -37,7 +37,7 @@ public:
         AnimationEvaluation& evaluation, ReplacedAnimationInput const& input);
     // Re-evaluate continuous channels at the last accepted playback clocks.
     // No controller transitions, instructions, hooks or owner state advances.
-    Pose observePlayer(AnimationSampler const& sampler, AnimationEvaluation& observation) const;
+    Pose observePlayer(AnimationSampler const& sampler, MolangContext& context) const;
     bool hasActiveStageAnimation(std::string const& name) const;
     Json swingStates() const;
     Json report() const;

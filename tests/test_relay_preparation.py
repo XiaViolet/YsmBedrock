@@ -54,6 +54,17 @@ class RelayDeliveryTests(unittest.TestCase):
         return self.room.update(user, dict(protocol=1, xuid=user, serial=self.serials[user],
                                            model=self.model, session=self.session, **fields))
 
+    def test_flight_and_face_snapshot_survive_forwarding_and_landing(self):
+        self.update(self.sender,flight=1,form_values={"variable.t8":6})
+        state=self.update(self.reader)["players"][0]
+        self.assertEqual((state["flight"],state["form_values"]),(1,{"variable.t8":6}))
+        self.update(self.sender,flight=0,form_values={"variable.t8":0})
+        state=self.update(self.reader)["players"][0]
+        self.assertEqual((state["flight"],state["form_values"]),(0,{"variable.t8":0}))
+        for invalid in [dict(flight=4),dict(flight=True),dict(form_values={"variable.roaming.x":4})]:
+            with self.subTest(invalid=invalid),self.assertRaises(ValueError):
+                self.update(self.sender,**invalid)
+
     def request(self, seen):
         result = self.update(self.reader, receipts={self.sender: [self.session, self.model, seen]})
         return [event[0] for event in result['players'][0]['events']]

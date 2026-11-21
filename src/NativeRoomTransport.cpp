@@ -1,6 +1,7 @@
 #include "RoomTransport.h"
 #include "RoomTransportProbe.h"
 #include "RoomTransportQueue.h"
+#include "RoomByteRate.h"
 #include "ll/api/network/packet/Packet.h"
 #include "ll/api/service/Bedrock.h"
 #include "mc/client/game/IClientInstance.h"
@@ -33,6 +34,7 @@ using namespace room_wire;
 using ll::network::PacketSide;
 using Bytes = std::vector<std::uint8_t>;
 using Clock = std::chrono::steady_clock;
+auto nowMillis(){return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();}
 
 constexpr auto packetName = std::string_view{"ysm:room"};
 constexpr auto wireId = ll::network::makePacketRuntimeId(packetName, 1);
@@ -144,6 +146,7 @@ struct Peer {
     NetworkIdentifier endpoint;
     HostProbe probe;
     Outbox outgoing;
+    RoomByteRate downloadRate;
 };
 } // namespace
 
@@ -187,6 +190,7 @@ struct RoomTransport::Impl {
     Clock::time_point nextPresence{};
     Clock::time_point nextLatency{};
     std::optional<int> latency;
+    RoomByteRate uploadRate;
     std::vector<RoomWireEvent> events;
     std::set<std::string, std::less<>> reported;
     std::size_t eventBytes = 0;
@@ -209,6 +213,7 @@ struct RoomTransport::Impl {
         nextPresence = {};
         nextLatency = {};
         latency.reset();
+        uploadRate={};
         events.clear();
         reported.clear();
         eventBytes = 0;
@@ -259,6 +264,13 @@ void RoomTransport::stop() {
 void RoomTransport::reset() { std::lock_guard lock(impl->mutex); impl->clear(); }
 RoomRole RoomTransport::role() const { std::lock_guard lock(impl->mutex); return impl->role; }
 std::optional<int> RoomTransport::latencyMs() const { std::lock_guard lock(impl->mutex); return impl->latency; }
+std::uint64_t RoomTransport::uploadBytesPerSecond() const {std::lock_guard lock(impl->mutex);return impl->uploadRate.perSecond(nowMillis());}
+std::map<std::string,std::uint64_t> RoomTransport::peerDownloads() const {
+    std::lock_guard lock(impl->mutex);auto now=nowMillis();
+    std::map<std::string,std::uint64_t> rates;
+    for(auto const& [id,p]:impl->peers)if(auto rate=p.downloadRate.perSecond(now))rates.emplace(id,rate);
+    return rates;
+}
 std::string RoomTransport::localId() const { std::lock_guard lock(impl->mutex); return impl->local; }
 std::vector<RoomWireEvent> RoomTransport::drain() {
     std::lock_guard lock(impl->mutex);
@@ -270,17 +282,17 @@ std::vector<RoomWireEvent> RoomTransport::drain() {
     return std::exchange(impl->events, {});
 }
 bool RoomTransport::send(std::string_view peer, std::span<std::uint8_t const> data, bool control,
-                         std::function<bool()> authorized) {
+                         std::function<bool()> authorized,std::size_t modelBytes) {
     if (data.empty() || data.size() > maxPayload) return false;
     std::lock_guard lock(impl->mutex);
     if (impl->role == RoomRole::Guest && peer == roomHostPeer && impl->guest.ready)
-        return impl->outgoing.push(data, control, std::move(authorized));
+        return impl->outgoing.push(data, control, std::move(authorized),modelBytes);
     auto it = impl->peers.find(peer);
     if (impl->role != RoomRole::Host || it == impl->peers.end() || it->second.probe.live.client == Nonce{}) return false;
     std::size_t queued = data.size();
     for (auto const& item : impl->peers) queued += item.second.outgoing.sizeBytes();
     auto limit = control ? maxQueueBytes : maxQueueBytes - maxPayload;
-    return queued <= limit && it->second.outgoing.push(data, control, std::move(authorized));
+    return queued <= limit && it->second.outgoing.push(data, control, std::move(authorized),modelBytes);
 }
 
 void RoomTransport::clientTick(IClientInstance& client, Player* local) {
@@ -383,9 +395,10 @@ void RoomTransport::clientTick(IClientInstance& client, Player* local) {
             }
         }
         std::size_t budget = 128u << 10;
-        impl->outgoing.flush(budget, [&](Bytes const& data) {
+        auto sent=impl->outgoing.flush(budget, [&](Bytes const& data) {
             return writePacket(nullptr, impl->guest.pair.make(Op::Data), data);
         });
+        impl->uploadRate.add(nowMillis(),sent);
     }
 }
 
@@ -466,11 +479,13 @@ void RoomTransport::serverTick(Level& level) {
         if (it == impl->peers.end()) it = impl->peers.begin();
         auto& [id, peer] = *it++;
         if (peer.outgoing.empty()) continue;
-        std::size_t allowance = std::min<std::size_t>(budget, maxPayload);
+        std::size_t allowance = impl->peers.size()==1?budget:std::min<std::size_t>(budget, maxPayload);
         auto before = allowance;
-        peer.outgoing.flush(allowance, [&](Bytes const& data) {
+        auto sent=peer.outgoing.flush(allowance, [&](Bytes const& data) {
             return writePacket(&peer.endpoint, peer.probe.live.make(Op::Data), data);
         });
+        impl->uploadRate.add(nowMillis(),sent);
+        peer.downloadRate.add(nowMillis(),sent);
         budget -= before - allowance;
         impl->cursor = id;
     }

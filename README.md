@@ -2,9 +2,11 @@
 
 YsmBedrock 是 [Yes Steve Model](https://github.com/YesSteveModel/YesSteveModel) 面向 Minecraft 基岩版 Windows 客户端的非官方移植，支持导入 YSM 模型、替换玩家外观和播放动作。基岩版移植代码主要由 OpenAI Codex 编写，项目由 XiaViolet 维护。
 
-**源码版本 0.29.24** · Windows x64 · Minecraft 1.26.60.05 · LeviLamina 26.60.7／26.60.8
+**源码版本 0.29.39** · Windows x64 · Minecraft 1.26.60.05 · LeviLamina 26.60.7／26.60.8
 
 ## 安装与反馈
+
+0.29.39 在「联机玩家」加入模型重新下载和重新上传。房主与参与同步的玩家均需更新到同一版本。
 
 [GitHub Releases](https://github.com/XiaViolet/YsmBedrock/releases) 提供发布版本的 `.mcmod`。也可下载[旧版 0.29.20 内测包](https://github.com/XiaViolet/YsmBedrock/blob/downloads/YsmBedrock-0.29.20.mcmod)。
 
@@ -27,4 +29,4 @@ LeviLauncher 的「LeviMC 模组」目录使用仓库中的 `lip.toml` 安装 Wi
 
 ## 来源与许可
 
-上游代码及依赖见[第三方声明](THIRD_PARTY_NOTICES.md)和[许可文件](licenses/)。完整打包所需的 Wine Fox（酒狐）模型见[来源和作者署名](licenses/wine-fox-source.json)。
+上游代码及依赖见[第三方声明](THIRD_PARTY_NOTICES.md)和[许可文件](licenses/)。内置模型的来源与作者署名见[酒狐](licenses/wine-fox-source.json)和[魔法酒狐](licenses/magical-wine-fox-source.json)的记录。

@@ -40,10 +40,10 @@ struct ShoulderOccupants {
 
 // Java 2.6.5 bakes one root-to-locator path per shoulder. Numbered sibling
 // bones belong to the author and are not additional attachment points.
-inline std::optional<glm::mat4> shoulderLocator(MolangContext const& context, bool left) {
+inline std::optional<glm::mat4> animatedLocator(MolangContext const& context, std::string_view name) {
     if (!context.boneRig) return {};
     auto const& rig = *context.boneRig;
-    auto bone = rig.find(left ? "LeftShoulderLocator" : "RightShoulderLocator");
+    auto bone = rig.find(name);
     if (bone == rig.end()) return {};
     glm::mat4 matrix(1);
     bool endpoint = true;
@@ -70,6 +70,27 @@ inline std::optional<glm::mat4> shoulderLocator(MolangContext const& context, bo
         bone = rig.find(basis.parent);
     }
     return matrix;
+}
+
+// The Java passenger pass rotates the complete locator into the vehicle's
+// frame before cancelling the native riding offset. Animated seats can tilt.
+inline std::optional<glm::mat4> passengerLocator(MolangContext const& context, int seat,
+    float yawDegrees, glm::vec3 vehicleMinusRider, bool customPlayer) {
+    if (seat < 0) return {};
+    auto locator = animatedLocator(context, seat == 0 ? "PassengerLocator" : "PassengerLocator" + std::to_string(seat + 1));
+    if (!locator) return {};
+    auto angle = glm::radians(180.f - yawDegrees);
+    auto yaw = glm::rotate(glm::mat4(1), angle, glm::vec3(0, 1, 0));
+    if (customPlayer) vehicleMinusRider.y -= 0.5f;
+    auto result = glm::translate(yaw * *locator * glm::transpose(yaw), vehicleMinusRider);
+    for (int col = 0; col < 4; ++col)
+        for (int row = 0; row < 4; ++row)
+            if (!std::isfinite(result[col][row])) return {};
+    return result;
+}
+
+inline std::optional<glm::mat4> shoulderLocator(MolangContext const& context, bool left) {
+    return animatedLocator(context, left ? "LeftShoulderLocator" : "RightShoulderLocator");
 }
 }
 

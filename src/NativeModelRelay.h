@@ -48,6 +48,6 @@ public:
         std::function<void()> const& draw);
     bool suppressGlide(Actor const& actor, bool firstPerson, std::array<float, 2> const& rotation);
     std::span<BoneVisual const> visuals(SkinnedMesh const& mesh, RenderController const* controller,
-        std::span<BoneVisual> scratch, std::vector<BoneVisual>& overflow);
+        std::span<BoneVisual> scratch, std::vector<BoneVisual>& overflow, Actor const* owner = nullptr);
 };
 }

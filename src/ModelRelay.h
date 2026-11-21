@@ -3,6 +3,8 @@
 #include "MolangRoaming.h"
 #include <array>
 #include <chrono>
+#include <cmath>
+#include <stdexcept>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -30,6 +32,9 @@ struct RelayReceipt {
 struct RelayPose {
     std::string xuid, session, contentKey, texture, action;
     std::uint64_t serial{};
+    // Absent on older clients. Zero means both flight modes have ended.
+    std::optional<unsigned> flight;
+    std::map<std::string, float> formValues;
     std::uint64_t actionSerial{};
     double actionTime{};
     std::array<std::int64_t, 2> shoulderBirds{};
@@ -38,6 +43,25 @@ struct RelayPose {
     std::map<std::string, RelayReceipt> receipts;
 };
 
+// Both native rooms and the optional relay carry the same bounded additions.
+inline void writePoseExtras(Json& message, RelayPose const& state) {
+    if (state.flight) message["flight"] = *state.flight;
+    if (!state.formValues.empty()) message["form_values"] = state.formValues;
+}
+inline void readPoseExtras(Json const& message, RelayPose& state) {
+    if (auto f = message.find("flight"); f != message.end()) {
+        if (!f->is_number_unsigned() || f->get<std::uint64_t>() > 3) throw std::runtime_error("Invalid flight state");
+        state.flight = f->get<unsigned>();
+    }
+    if (auto values = message.find("form_values"); values != message.end()) {
+        if (!values->is_object() || values->size() > 128) throw std::runtime_error("Invalid model form state");
+        for (auto const& [name, value] : values->items()) {
+            if (name.size() > 96 || !name.starts_with("variable.") || name.starts_with(roamingPrefix)
+                || !value.is_number() || !std::isfinite(value.get<float>())) throw std::runtime_error("Invalid model form field");
+            state.formValues.emplace(name, value.get<float>());
+        }
+    }
+}
 struct RelayFrame {
     bool approved{};
     std::uint64_t acknowledgedEvent{};
@@ -55,6 +79,7 @@ class RelayPreparationQueue {
     std::string lastTried;
 public:
     void failed(RelayPose const& peer, Clock::time_point now);
+    void retry(std::string const& player) { failures.erase(player); }
     RelayPose const* next(RelayFrame const& frame, Clock::time_point now,
         std::function<bool(std::string const&)> const& eligible);
 };

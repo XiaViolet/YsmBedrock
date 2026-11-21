@@ -1,4 +1,5 @@
 #include "NativeModelRelay.inl"
+#include "BoneVisual.h"
 
 #include <iostream>
 #include <stdexcept>
@@ -11,6 +12,7 @@ struct Skin {
 struct Peer {
     Actor* actor;
     Skin skin;
+    unsigned animationTexture{};
 };
 using Snapshot = ysm::detail::RelayRenderPeers<Actor, Peer>;
 
@@ -18,8 +20,10 @@ void require(bool result, char const* label) {
     if (!result) throw std::runtime_error(label);
 }
 void uploadAndBind(Snapshot const& snapshot, Skin& selected) {
-    snapshot.forEachSkin([&](Skin& skin) { if (&skin == &selected) ++skin.uploads; });
-    snapshot.forEachSkin([&](Skin& skin) { if (&skin == &selected) ++skin.bindings; });
+    snapshot.forEachPeer([&](Peer& peer) {
+        if (&peer.skin == &selected) peer.animationTexture = ++peer.skin.uploads;
+    });
+    snapshot.forEachPeer([&](Peer& peer) { if (&peer.skin == &selected) ++peer.skin.bindings; });
 }
 }
 
@@ -49,5 +53,22 @@ int main() {
     uploadAndBind(ready, bea->skin);
     require(ready.actors.at(&beaActor) == bea && bea->skin.uploads == 2 && bea->skin.bindings == 2,
             "published once and bound to the right actor");
+    require(alice->animationTexture == 2 && bea->animationTexture == 2, "animation retains last texture revision for each wearer");
+    struct PartName { std::string value; auto const& getString() const { return value; } };
+    struct Part { PartName const* mName; };
+    PartName root{"root"}, label{"__ysm_body_42"}, other{"other"};
+    Part rootPart{&root}, copied{&label}, foreignPart{&other};
+    std::array<Part const*,2> parts{&rootPart,&copied};
+    std::array<ysm::BoneVisual,2> result;
+    auto resolve = [&](std::string const& key, ysm::BoneVisual& visual) {
+        if (key == label.value) { visual.glow = 15; return true; }
+        return key == root.value;
+    };
+    require(ysm::resolveOwnedPalette(parts,result,resolve) && result[1].glow==15, "cloned peer mesh restores the glow bone");
+    parts[1]=&rootPart;
+    require(!ysm::resolveOwnedPalette(parts,result,resolve),"vanilla mesh excluded");
+    parts={&copied,&foreignPart};
+    require(!ysm::resolveOwnedPalette(parts,result,resolve),"mixed unknown mesh excluded");
+    std::cout << "PASS cloned glow palette, vanilla and mixed palette exclusions"<<'\n';
     std::cout << "PASS first install, existing peer, second-peer install callbacks, rollback, commit\n";
 }

@@ -78,7 +78,7 @@ double MolangPhysics::evaluate(bool first, std::span<MolangValue const> args) {
             throw std::runtime_error("Physics arguments must be finite floats");
         if (i <= values.size()) values[i - 1] = value;
     }
-    auto name = args[0].string();
+    auto const& name = args[0].stringValue();
     if (name.empty()) return 0;
     auto found = states.find(name);
     if (found == states.end()) {

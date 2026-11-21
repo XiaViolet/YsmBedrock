@@ -6,6 +6,8 @@
 #include "mc/client/player/LocalPlayer.h"
 #include "AnimationRuntime.h"
 #include "UiPointer.h"
+#include "NativeMenuTouch.h"
+#include "UiTouchDelivery.h"
 #include "UiMesh.h"
 #include "UiMouseCapture.h"
 #include "UiTextAtlas.h"
@@ -58,17 +60,29 @@ std::string typedText(int key,bool control) {
     if(count<=0)return {};std::wstring text;for(int i=0;i<count;++i)if(value[i]>=32)text+=value[i];return utf8(text);
 }
 struct ClientPointer { UiPoint position; float width,height; };
-std::optional<ClientPointer> clientPointer() {
-    // Production cursor acquisition, not injected input: screen/client pixel
-    // conversion is immune to zero-position button events and GUI scaling.
+HWND foregroundClientWindow() {
     HWND window=GetForegroundWindow();DWORD process=0;GetWindowThreadProcessId(window,&process);
-    if(process!=GetCurrentProcessId())return {};
+    return process==GetCurrentProcessId()?window:nullptr;
+}
+bool isTouchMessage() {
+    INPUT_MESSAGE_SOURCE source{};
+    if (GetCurrentInputMessageSource(&source) && source.deviceType == IMDT_TOUCH) return true;
+    // Windows identifies touch-promoted mouse messages with the tablet
+    // signature and the touch bit (the same signature without it is a pen).
+    return (static_cast<ULONG_PTR>(GetMessageExtraInfo()) & 0xffffff80u) == 0xff515780u;
+}
+std::optional<ClientPointer> clientPointer(HWND window, bool touch = false) {
+    if (!window) return {};
     RECT area{};POINT point{};
-    if(!GetClientRect(window,&area)||!GetCursorPos(&point)||!ScreenToClient(window,&point)||area.right<=0||area.bottom<=0)return {};
+    if (touch) {
+        auto pos = GetMessagePos();
+        point = {static_cast<short>(LOWORD(pos)),static_cast<short>(HIWORD(pos))};
+    } else if (!GetCursorPos(&point)) return {};
+    if(!GetClientRect(window,&area)||!ScreenToClient(window,&point)||area.right<=0||area.bottom<=0)return {};
     return ClientPointer{{static_cast<float>(point.x),static_cast<float>(point.y)},static_cast<float>(area.right),static_cast<float>(area.bottom)};
 }
 void restoreMouse(IClientInstance* client,bool restore) {
-    if(restore&&client&&client->getLocalPlayer()&&client->getTopScreenName()=="hud_screen"&&clientPointer())client->grabMouse();
+    if(restore&&client&&client->getLocalPlayer()&&client->getTopScreenName()=="hud_screen"&&foregroundClientWindow())client->grabMouse();
 }
 std::size_t drawMesh(ScreenContext& screen,std::span<UiVertex const> vertices) {
     if(vertices.empty())return 0;
@@ -122,7 +136,36 @@ struct NativeYsmUi::Impl {
     std::size_t textureIndex=0;
     float width=0,height=0;
     UiPointer pointer;
+    bool forceRelative = false;
     std::filesystem::path diagnostics;
+    std::filesystem::path touchDiagnostics;
+    std::filesystem::path mouseDiagnostics;
+    struct MouseTrace {
+        unsigned moves = 0, deltas = 0, gameChanges = 0, desktopChanges = 0, buttons = 0;
+        std::optional<UiPoint> game, desktop;
+        std::chrono::steady_clock::time_point nextWrite{};
+        static void observe(std::optional<UiPoint>& last, unsigned& changes, UiPoint point) {
+            if (last && (last->x != point.x || last->y != point.y)) ++changes;
+            last = point;
+        }
+    } mouseTrace;
+    HWND touchWindow{};
+    bool promotedTouch = false, deliveredTouch = false;
+    int reportedTouchFlags = -1;
+    void reportTouch() {
+        if (touchDiagnostics.empty()) return;
+        auto info = NativeMenuTouch::stats();
+        int flags = int(info.attached) | (int(info.pointerMessages != 0) << 1) |
+            (int(info.touchMessages != 0) << 2) | (int(promotedTouch) << 3) | (int(deliveredTouch) << 4) |
+            (int(info.pointerLookupFailed) << 5) | (int(info.touchReadFailed) << 6);
+        if (flags == reportedTouchFlags) return;
+        reportedTouchFlags = flags;
+        std::ofstream(touchDiagnostics) << Json{{"session",menuSession},{"attached",info.attached},
+            {"attach_error",info.attachError},{"wm_pointer_seen",info.pointerMessages!=0},
+            {"wm_touch_seen",info.touchMessages!=0},{"promoted_mouse_seen",promotedTouch},
+            {"native_contact_delivered",deliveredTouch},{"pointer_lookup_failed",info.pointerLookupFailed},
+            {"touch_read_failed",info.touchReadFailed}}.dump(2);
+    }
     std::uint64_t renderedFrames=0,skippedViews=0;
     std::chrono::steady_clock::time_point reportAt{};
     bool retireTexture=false;
@@ -174,6 +217,8 @@ struct NativeYsmUi::Impl {
     }
     bool closeUi() {
         mouseCapture.close();
+        NativeMenuTouch::close();
+        touchWindow = nullptr;
         ui.close();pointer.reset();retireTexture=true;
         return std::exchange(capture,false);
     }
@@ -196,6 +241,8 @@ std::optional<std::uint64_t> NativeYsmUi::updateHud(bool enabled, bool debugOver
     impl->portraitCadence.rate(settings.value("hud_fps",30));
     impl->portrait = portrait;
     impl->debugOverlay = debugOverlay;
+    bool forceRelative = settings.value("relative_menu_pointer", false);
+    if (std::exchange(impl->forceRelative, forceRelative) != forceRelative) impl->pointer.reset();
     if (portrait) {
         impl->portraitX = settings.value("hud_x", 12) / 100.0f;
         impl->portraitY = settings.value("hud_y", 82) / 100.0f;
@@ -236,14 +283,28 @@ void NativeYsmUi::toggle(IClientInstance& client,bool wheel) {
     if(!client.getLocalPlayer()||client.getTopScreenName()!="hud_screen")return;
     {std::scoped_lock lock(impl->mutex);
         if(impl->ui.isOpen())restore=impl->closeUi();
-        else {impl->capture=client.getMouseGrabbed();impl->pointer.reset();impl->opened=std::chrono::steady_clock::now();++impl->menuSession;impl->menuReady=false;impl->openingKeys.clear();impl->ui.open(wheel);impl->mouseCapture.open(&client);opening=true;}
+        else {impl->capture=client.getMouseGrabbed();impl->pointer.reset();impl->opened=std::chrono::steady_clock::now();++impl->menuSession;impl->menuReady=false;impl->openingKeys.clear();impl->ui.open(wheel);impl->mouseCapture.open(&client);opening=true;
+            impl->promotedTouch = impl->deliveredTouch = false;
+            impl->reportedTouchFlags = -1;
+            impl->mouseTrace = {};
+            // Install on the render thread once there is a visible menu. A
+            // hook installed by a transient input worker dies with that worker.
+            impl->touchWindow = nullptr;
+        }
     }
     // Mouse capture may synchronously publish another input event. Never hold
     // the UI state lock across either native capture call.
     if(opening)client.releaseMouse();else restoreMouse(&client,restore);
 }
 void NativeYsmUi::close(IClientInstance* client){bool restore;{std::scoped_lock lock(impl->mutex);restore=impl->closeUi();}restoreMouse(client,restore);}
-void NativeYsmUi::diagnostics(std::filesystem::path path){std::scoped_lock lock(impl->mutex);impl->diagnostics=std::move(path);}
+void NativeYsmUi::diagnostics(std::filesystem::path const& directory, bool debug) {
+    std::scoped_lock lock(impl->mutex);
+    impl->diagnostics = debug ? directory/"ui-input-status.json" : std::filesystem::path{};
+    impl->touchDiagnostics = directory/"ui-touch-status.json";
+    if (debug || std::filesystem::exists(directory/"mouse-diagnostics.enable"))
+        impl->mouseDiagnostics = directory/"ui-mouse-status.json";
+    else impl->mouseDiagnostics.clear();
+}
 bool NativeYsmUi::isOpen()const{std::scoped_lock lock(impl->mutex);return impl->ui.isOpen();}
 bool NativeYsmUi::showsModels() const {
     std::scoped_lock lock(impl->mutex);
@@ -251,6 +312,7 @@ bool NativeYsmUi::showsModels() const {
 }
 bool NativeYsmUi::suppressMouseCapture(IClientInstance const& client){return impl->mouseCapture.suppress(&client);}
 void NativeYsmUi::maintainMouse(IClientInstance& client) {
+    NativeMenuTouch::retireIfIdle();
     // Catch capture acquired through a focus/input-mode transition before its
     // ordinary grabMouse request. Native calls always happen outside ui.mutex.
     if(impl->mouseCapture.owns(&client)&&client.getMouseGrabbed()) {
@@ -278,8 +340,14 @@ bool NativeYsmUi::key(IClientInstance& client,int code,bool down,bool control) {
         if(!impl->ui.isOpen())restore=impl->closeUi();
     }restoreMouse(&client,restore);return consumed;
 }
-bool NativeYsmUi::mouse(IClientInstance& client,int button,int value,float x,float y) {
+bool NativeYsmUi::mouse(IClientInstance& client,int button,int value,float x,float y,float dx,float dy) {
     std::unique_lock lock(impl->mutex);
+    bool touch = (impl->ui.isOpen() || NativeMenuTouch::waitingForRelease()) && isTouchMessage();
+    if (touch) {
+        auto pos = GetMessagePos();
+        POINT physical{static_cast<short>(LOWORD(pos)),static_cast<short>(HIWORD(pos))};
+        if (NativeMenuTouch::alreadyHandled(physical,DWORD(GetMessageTime()))) return true;
+    }
     if(button>0&&button<4) {
         if(!value&&impl->gameButtons[button]) {impl->gameButtons[button]=false;return false;}
         if(!impl->ui.isOpen()) {
@@ -289,12 +357,24 @@ bool NativeYsmUi::mouse(IClientInstance& client,int button,int value,float x,flo
         impl->uiButtons[button]=value!=0;
     }
     if(!impl->ui.isOpen())return false;
+    if (!touch && !impl->mouseDiagnostics.empty()) {
+        auto& trace = impl->mouseTrace;
+        if (button == 0) {
+            ++trace.moves;
+            if (dx || dy) ++trace.deltas;
+            trace.observe(trace.game,trace.gameChanges,{x,y});
+        } else ++trace.buttons;
+    }
     if (!impl->menuReady) return true;
+    auto window = foregroundClientWindow();
+    if (!window) return true;
     auto gui=client.getGuiData();auto const& size=*gui->mScreenSizeData;
     auto pw=size.clientScreenSize->x,ph=size.clientScreenSize->y;
     std::optional<UiPoint> native;
-    if(auto position=clientPointer()){native=position->position;pw=position->width;ph=position->height;}
-    auto point=impl->pointer.feed(button,x,y,native,pw,ph,impl->width,impl->height);
+    if (touch) { impl->promotedTouch = true; impl->reportTouch(); }
+    if(auto position=clientPointer(window,touch)){native=position->position;pw=position->width;ph=position->height;}
+    auto point=touch ? impl->pointer.contact(native.value_or(UiPoint{x,y}),pw,ph,impl->width,impl->height)
+                     : impl->pointer.feed(button,x,y,native,pw,ph,impl->width,impl->height,{dx,dy},impl->forceRelative);
     if(!point)return true;
     const bool traceClick = button == 1 && value && !impl->diagnostics.empty();
     Json before;
@@ -322,9 +402,37 @@ void NativeYsmUi::render(MinecraftUIRenderContext& context, AnimationRuntime con
     auto gui=client.getGuiData();auto const& size=*gui->mScreenSizeData;
     impl->width=size.clientUIScreenSize->x;impl->height=size.clientUIScreenSize->y;
     if(!std::isfinite(impl->width)||!std::isfinite(impl->height)||impl->width<=0||impl->height<=0)return;
-    if(!hudOnly) if(auto position=clientPointer()){
-        impl->textDensity=std::min(position->width/impl->width,position->height/impl->height);
-        if(auto point=impl->pointer.feed(0,0,0,position->position,position->width,position->height,impl->width,impl->height))impl->ui.mouse(0,0,point->x,point->y);
+    if(!hudOnly) {
+        auto window = foregroundClientWindow();
+        if (impl->touchWindow && window != impl->touchWindow) {
+            impl->pointer.reset();
+            impl->ui.cancelPointer();
+            NativeMenuTouch::focusLost();
+            NativeMenuTouch::close();
+            impl->touchWindow = nullptr;
+        }
+        if (auto position=clientPointer(window)) {
+            impl->textDensity=std::min(position->width/impl->width,position->height/impl->height);
+            if (!impl->mouseDiagnostics.empty())
+                impl->mouseTrace.observe(impl->mouseTrace.desktop,impl->mouseTrace.desktopChanges,position->position);
+            if (!impl->pointer.usesTouch())
+                if(auto point=impl->pointer.frame(position->position,position->width,position->height,impl->width,impl->height))
+                    impl->ui.mouse(0,0,point->x,point->y);
+        }
+        if (window && !impl->touchWindow) {
+            impl->touchWindow = window;
+            NativeMenuTouch::open(window);
+        }
+        auto& trace = impl->mouseTrace;
+        auto now = std::chrono::steady_clock::now();
+        if (!impl->mouseDiagnostics.empty() && now >= trace.nextWrite) {
+            trace.nextWrite = now + std::chrono::seconds(1);
+            std::ofstream(impl->mouseDiagnostics) << Json{{"session",impl->menuSession},{"foreground",window!=nullptr},
+                {"game_mouse_grabbed",client.getMouseGrabbed()},{"forced_compatibility",impl->forceRelative},
+                {"pointer_source",impl->pointer.source()},{"game_motion_events",trace.moves},{"game_nonzero_deltas",trace.deltas},
+                {"game_position_changes",trace.gameChanges},{"desktop_position_changes",trace.desktopChanges},
+                {"game_button_events",trace.buttons}}.dump(2);
+        }
     }
     UiScene scene;
     if (portraitOnly) {
@@ -335,6 +443,14 @@ void NativeYsmUi::render(MinecraftUIRenderContext& context, AnimationRuntime con
     } else if (!hudOnly) {
         auto const& bar = *gui->mHUDHotbarRectangle;
         scene = impl->ui.draw(impl->width, impl->height, bar._y0);
+        auto touches = NativeMenuTouch::take();
+        impl->deliveredTouch |= deliverMenuTouches(touches,impl->ui,impl->pointer,impl->width,impl->height);
+        impl->reportTouch();
+        if (!impl->ui.isOpen()) {
+            auto restore = impl->closeUi();
+            lock.unlock(); restoreMouse(&client,restore); return;
+        }
+        if (!touches.empty()) scene = impl->ui.draw(impl->width,impl->height,bar._y0);
     }
     if (hudOnly && impl->debugOverlay) {
         auto lines = animation.debugLines();
@@ -479,6 +595,7 @@ void NativeYsmUi::render(MinecraftUIRenderContext& context, AnimationRuntime con
                 {"live_player_preview",scene.livePlayerPreview || portraitOnly},{"portrait_target_fps",impl->portraitCadence.rate()},{"preview_backend",previewBackend},{"preview_vertices",impl->meshFrame ? impl->meshFrame->vertices.size() : 0},
                 {"native_preview_error",impl->nativeFailure},{"portrait_shoulders", impl->portraitParrots.report()}, {"mouse_grabbed",client.getMouseGrabbed()},{"menu_owns_mouse",impl->mouseCapture.owns(&client)},
                 {"game_capture_requests_blocked",impl->mouseCapture.blockedCount()},{"release_retries",impl->releaseRetries.load()},
+                {"menu_pointer_source",impl->pointer.source()},
                 {"text_pixel_density",impl->textDensity},{"text_atlas_pixels",{impl->textAtlas.image.width,impl->textAtlas.image.height}},
                 {"vertices",mainMesh.size()+cursorMesh.size()},{"legacy_rectangle_calls",0},{"gui_size",{impl->width,impl->height}},{"ui",impl->ui.report()}}.dump(2);
         }catch(std::exception const&){}impl->reportAt=now;

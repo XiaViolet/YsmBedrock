@@ -173,7 +173,7 @@ std::string MolangValue::string() const {
     return std::to_string(number());
 }
 bool MolangValue::operator==(MolangValue const& other) const {
-    if (isString() && other.isString()) return string() == other.string();
+    if (isString() && other.isString()) return stringValue() == other.stringValue();
     if (isArray() && other.isArray()) return std::equal(array().begin(), array().end(), other.array().begin(), other.array().end());
     if (isRecord() && other.isRecord()) {
         if (auto coordinates = std::get_if<Vector>(&value))
@@ -510,10 +510,10 @@ static MolangCallSignature const* builtinSignature(std::string const& name) {
     return found != builtins.end() ? &found->second : nullptr;
 }
 std::optional<MolangCallSignature> MolangContext::signature(std::string const& name) const {
+    if (name.starts_with("fn.")) return library && library->contains(std::string_view(name).substr(3))
+        ? std::optional<MolangCallSignature>(MolangCallSignature{0, 255}) : std::nullopt;
     if (auto builtin = builtinSignature(name)) return *builtin;
     if (name.starts_with("math.")) return {};
-    if (name.starts_with("fn.")) return library && library->contains(name.substr(3))
-        ? std::optional<MolangCallSignature>(MolangCallSignature{0, 255}) : std::nullopt;
     if (functions.contains(name)) return MolangCallSignature{0, name.starts_with("ctrl.") ? 0u : 255u};
     auto const& slots = localVariable(name) ? localVariables : variables;
     if (slots.contains(name) || queries.contains(name) || name.starts_with("ctrl.state_")) return MolangCallSignature{0, 0};
@@ -522,7 +522,7 @@ std::optional<MolangCallSignature> MolangContext::signature(std::string const& n
 MolangValue MolangContext::call(std::string const& name, std::span<MolangValue const> args) {
     // Nested author calls must not retain the stack frame used for native
     // particle, sound, and other host actions at every function level.
-    if (name.starts_with("fn.") && library) return library->call(name.substr(3), *this, args);
+    if (name.starts_with("fn.") && library) return library->call(std::string_view(name).substr(3), *this, args);
     return callBuiltin(name, args);
 }
 // YSM 2.6.5 uses the Minecraft client's float-indexed sine table. Cosine
@@ -542,6 +542,72 @@ static float legacyTableTrig(float degrees, bool cosine) {
     if (!(position > static_cast<float>(std::numeric_limits<std::int32_t>::min()))) return sines.front();
     if (position >= static_cast<float>(std::numeric_limits<std::int32_t>::max())) return sines.back();
     return sines[static_cast<std::uint32_t>(static_cast<std::int32_t>(position)) & 65535u];
+}
+
+// Decode fixed Java math operations once per compiled call site. The host
+// can still override a builtin, including from an argument's side effects.
+enum class SourceMath : unsigned char { None, Abs, Clamp, Cos, Exp, Floor, Lerp, Max, Min, Mod, Pow, Round, Sin, Sqrt, MinAngle };
+static SourceMath sourceMathOperation(std::string_view name) {
+    if (!name.starts_with("math.")) return SourceMath::None;
+    static const std::map<std::string_view, SourceMath> operations{
+        {"math.abs", SourceMath::Abs},
+        {"math.clamp", SourceMath::Clamp},
+        {"math.cos", SourceMath::Cos},
+        {"math.exp", SourceMath::Exp},
+        {"math.floor", SourceMath::Floor},
+        {"math.lerp", SourceMath::Lerp},
+        {"math.max", SourceMath::Max},
+        {"math.min", SourceMath::Min},
+        {"math.mod", SourceMath::Mod},
+        {"math.pow", SourceMath::Pow},
+        {"math.round", SourceMath::Round},
+        {"math.sin", SourceMath::Sin},
+        {"math.sqrt", SourceMath::Sqrt},
+        {"math.min_angle", SourceMath::MinAngle},
+    };
+    auto it = operations.find(name);
+    return it == operations.end() ? SourceMath::None : it->second;
+}
+static MolangValue evaluateSourceMath(SourceMath op, std::string const& name, std::span<MolangValue const> args, bool legacyMolang) {
+    std::array<float, 3> values{};
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        values[i] = static_cast<float>(args[i].number());
+        if (!std::isfinite(values[i])) throw std::runtime_error("Non-finite math argument: " + name);
+    }
+    auto a = values[0], b = values[1], c = values[2];
+    auto minimum = [](float x, float y) {
+        if (x == 0 && y == 0) return std::signbit(x) || std::signbit(y) ? -0.0f : 0.0f;
+        return std::min(x, y);
+    };
+    auto maximum = [](float x, float y) {
+        if (x == 0 && y == 0) return std::signbit(x) && std::signbit(y) ? -0.0f : 0.0f;
+        return std::max(x, y);
+    };
+    float result = 0;
+    if (legacyMolang && op == SourceMath::Sqrt && a < 0) return MolangValue::legacyNaN();
+    if (op == SourceMath::Abs) result = std::abs(a);
+    else if (op == SourceMath::Clamp) result = minimum(maximum(a, b), c);
+    else if (op == SourceMath::Cos) result = legacyMolang ? legacyTableTrig(a, true)
+        : static_cast<float>(std::cos(static_cast<double>(a) / 180.0 * std::numbers::pi));
+    else if (op == SourceMath::Exp) result = static_cast<float>(std::exp(static_cast<double>(a)));
+    else if (op == SourceMath::Floor) result = std::floor(a);
+    else if (op == SourceMath::Lerp) { float delta = b - a; float product = delta * c; result = a + product; }
+    else if (op == SourceMath::Max) result = maximum(a, b);
+    else if (op == SourceMath::Min) result = minimum(a, b);
+    else if (op == SourceMath::Mod) result = std::fmod(a, b);
+    else if (op == SourceMath::Pow) result = static_cast<float>(std::pow(static_cast<double>(a), static_cast<double>(b)));
+    else if (op == SourceMath::Round) result = static_cast<float>(std::clamp(std::floor(static_cast<double>(a) + 0.5),
+        static_cast<double>(std::numeric_limits<int>::min()), static_cast<double>(std::numeric_limits<int>::max())));
+    else if (op == SourceMath::Sin) result = legacyMolang ? legacyTableTrig(a, false)
+        : static_cast<float>(std::sin(static_cast<double>(a) / 180.0 * std::numbers::pi));
+    else if (op == SourceMath::Sqrt) result = a < 0 ? 0.0f : static_cast<float>(std::sqrt(static_cast<double>(a)));
+    else {
+        result = std::fmod(a, 360.0f);
+        if (result >= 180) result -= 360;
+        else if (result < -180) result += 360;
+    }
+    if (!std::isfinite(result)) throw std::runtime_error("Non-finite math result: " + name);
+    return static_cast<double>(result);
 }
 
 MolangValue MolangContext::callBuiltin(std::string const& name, std::span<MolangValue const> args) {
@@ -690,11 +756,11 @@ MolangValue MolangContext::callBuiltin(std::string const& name, std::span<Molang
     if (isBoneVector(name)) {
         arity(1);
         if (!args[0].isString()) return {};
-        auto boneName = args[0].string();
+        auto const& boneName = args[0].stringValue();
         if (name == "ysm.bone_pivot_abs") {
             if (auto cached = bonePivots.find(boneName); cached != bonePivots.end()) return cached->second;
             auto value = MolangValue::vector(bonePivot(*this, boneName));
-            if (boneRig && boneRig->contains(boneName)) bonePivots.emplace(std::move(boneName), value);
+            if (boneRig && boneRig->contains(boneName)) bonePivots.emplace(boneName, value);
             return value;
         }
         auto found = boneChannels.find(boneName);
@@ -755,52 +821,9 @@ MolangValue MolangContext::callBuiltin(std::string const& name, std::span<Molang
         return {};
     }
     auto fn = name.substr(5);
-    // Pinned source MathBuiltins uses Java float parameters and results.
-    // Keep those boundaries separate from the additional Bedrock math helpers.
-    static std::map<std::string, std::size_t> const sourceMath{{"abs", 1}, {"clamp", 3}, {"cos", 1},
-        {"exp", 1}, {"floor", 1}, {"lerp", 3}, {"max", 2}, {"min", 2}, {"mod", 2},
-        {"pow", 2}, {"round", 1}, {"sin", 1}, {"sqrt", 1}, {"min_angle", 1}};
-    if (auto signature = sourceMath.find(fn); signature != sourceMath.end()) {
-        arity(signature->second);
-        std::array<float, 3> values{};
-        for (std::size_t i = 0; i < args.size(); ++i) {
-            values[i] = static_cast<float>(args[i].number());
-            if (!std::isfinite(values[i])) throw std::runtime_error("Non-finite math argument: " + name);
-        }
-        auto a = values[0], b = values[1], c = values[2];
-        auto minimum = [](float x, float y) {
-            if (x == 0 && y == 0) return std::signbit(x) || std::signbit(y) ? -0.0f : 0.0f;
-            return std::min(x, y);
-        };
-        auto maximum = [](float x, float y) {
-            if (x == 0 && y == 0) return std::signbit(x) && std::signbit(y) ? -0.0f : 0.0f;
-            return std::max(x, y);
-        };
-        float result = 0;
-        if (legacyMolang && fn == "sqrt" && a < 0) return MolangValue::legacyNaN();
-        if (fn == "abs") result = std::abs(a);
-        else if (fn == "clamp") result = minimum(maximum(a, b), c);
-        else if (fn == "cos") result = legacyMolang ? legacyTableTrig(a, true)
-            : static_cast<float>(std::cos(static_cast<double>(a) / 180.0 * std::numbers::pi));
-        else if (fn == "exp") result = static_cast<float>(std::exp(static_cast<double>(a)));
-        else if (fn == "floor") result = std::floor(a);
-        else if (fn == "lerp") { float delta = b - a; float product = delta * c; result = a + product; }
-        else if (fn == "max") result = maximum(a, b);
-        else if (fn == "min") result = minimum(a, b);
-        else if (fn == "mod") result = std::fmod(a, b);
-        else if (fn == "pow") result = static_cast<float>(std::pow(static_cast<double>(a), static_cast<double>(b)));
-        else if (fn == "round") result = static_cast<float>(std::clamp(std::floor(static_cast<double>(a) + 0.5),
-            static_cast<double>(std::numeric_limits<int>::min()), static_cast<double>(std::numeric_limits<int>::max())));
-        else if (fn == "sin") result = legacyMolang ? legacyTableTrig(a, false)
-            : static_cast<float>(std::sin(static_cast<double>(a) / 180.0 * std::numbers::pi));
-        else if (fn == "sqrt") result = a < 0 ? 0.0f : static_cast<float>(std::sqrt(static_cast<double>(a)));
-        else {
-            result = std::fmod(a, 360.0f);
-            if (result >= 180) result -= 360;
-            else if (result < -180) result += 360;
-        }
-        if (!std::isfinite(result)) throw std::runtime_error("Non-finite math result: " + name);
-        return static_cast<double>(result);
+    if (auto op = sourceMathOperation(name); op != SourceMath::None) {
+        arity(builtinSignature(name)->minimum);
+        return evaluateSourceMath(op, name, args, legacyMolang);
     }
     constexpr double Degrees = std::numbers::pi / 180;
     if (fn == "pi") { arity(0); return std::numbers::pi; }
@@ -847,8 +870,11 @@ struct MolangNode {
     // Nonzero only if access validation on this subtree cannot depend on a
     // binding, value, or declaration. Depth preserves the validator's limit.
     unsigned char plainAccessDepth = 0;
+    bool validBuiltinArguments = false;
+    bool action = false;
     Arithmetic arithmetic = Arithmetic::None;
     SlotDomain domain = SlotDomain::Other;
+    SourceMath math = SourceMath::None;
 };
 struct MolangProgram::Impl {
     std::vector<MolangNode> nodes;
@@ -932,6 +958,10 @@ public:
         if (node.kind == MolangKind::Call || (node.kind == MolangKind::Variable &&
             !node.text.starts_with("variable.") && !node.text.starts_with("temp.") && !node.text.starts_with("context.")))
             node.builtin = builtinSignature(node.text);
+        if (node.kind == MolangKind::Call || node.kind == MolangKind::Variable)
+            node.action = MolangContext::isAction(node.text);
+
+        if (node.kind == MolangKind::Call) node.math = sourceMathOperation(node.text);
 
         bool plain = node.kind == MolangKind::String || node.kind == MolangKind::Number || node.kind == MolangKind::Variable
             || node.kind == MolangKind::Binary || node.kind == MolangKind::Unary || node.kind == MolangKind::Index;
@@ -948,6 +978,22 @@ public:
                 depth = std::max(depth, static_cast<unsigned char>(prior + 1));
             }
             node.plainAccessDepth = depth;
+        }
+        // Only skip validation proven to succeed without diagnostics. Dynamic
+        // bindings, invalid calls and ambiguous string arguments keep the
+        // original runtime checks, including their short-circuit behavior.
+        if (node.kind == MolangKind::Call && node.builtin && node.text != "loop"
+            && node.children.size() >= node.builtin->minimum && node.children.size() <= node.builtin->maximum) {
+            node.validBuiltinArguments = true;
+            for (std::size_t i = 0; i < node.children.size(); ++i) {
+                auto const& arg = nodes[node.children[i]];
+                if (!arg.plainAccessDepth || (node.builtin->stringParameters[i] && arg.kind != MolangKind::String)) {
+                    node.validBuiltinArguments = false;
+                    break;
+                }
+            }
+            // validateAccess on a call checks its arguments at a fresh depth.
+            if (node.validBuiltinArguments) node.plainAccessDepth = 1;
         }
         nodes.push_back(std::move(node)); return nodes.size() - 1;
     }
@@ -1274,7 +1320,7 @@ struct MolangEvaluator {
                 && !node.text.starts_with("temp.") && !node.text.starts_with("context.")) {
                 std::optional<MolangCallSignature> dynamic;
                 if (auto signature = signatureFor(node, dynamic)) {
-                    if (MolangContext::isAction(node.text) && !context.allowActions) return {};
+                    if (node.action && !context.allowActions) return {};
                     return accepts(node.text, {}, *signature) ? context.call(node.text, {}) : MolangValue{};
                 }
             }
@@ -1401,12 +1447,12 @@ struct MolangEvaluator {
                 return 0.0;
             }
             // Reject a disallowed action before evaluating its arguments.
-            if (MolangContext::isAction(node.text) && !context.allowActions) return {};
+            if (node.action && !context.allowActions) return {};
             if (node.text.starts_with("variable.") || node.text.starts_with("temp.") || node.text.starts_with("context."))
                 throw std::runtime_error("Molang variable is not callable: " + node.text);
             std::optional<MolangCallSignature> dynamic;
             auto signature = signatureFor(node, dynamic);
-            if (!signature || !accepts(node.text, node.children, *signature)) return {};
+            if (!signature || (!node.validBuiltinArguments && !accepts(node.text, node.children, *signature))) return {};
             // Math, bone and physics queries fit without a per-call heap allocation.
             std::array<MolangValue, 6> localArguments;
             std::vector<MolangValue> largeArguments;
@@ -1422,6 +1468,11 @@ struct MolangEvaluator {
                     if (!arguments[i].present() || clearLiteral(node.children[i])) arguments[i] = std::string();
                     else return {};
                 }
+            }
+            if (node.math != SourceMath::None) {
+                if (auto override = context.functions.find(node.text); override != context.functions.end())
+                    return override->second(arguments);
+                return evaluateSourceMath(node.math, node.text, arguments, context.legacyMolang);
             }
             return context.call(node.text, arguments);
         }
@@ -1491,7 +1542,7 @@ MolangValue MolangProgram::evaluate(MolangContext& context, MolangValue const& a
 }
 bool MolangProgram::hasControllerActions() const {
     return impl && std::any_of(impl->nodes.begin(), impl->nodes.end(), [](auto const& node) {
-        return node.kind == MolangKind::Call && MolangContext::isAction(node.text);
+        return node.kind == MolangKind::Call && node.action;
     });
 }
 bool MolangProgram::hasBoneVisualActions() const {
@@ -1504,6 +1555,16 @@ bool MolangProgram::hasBoneTransparency() const {
     return impl && std::any_of(impl->nodes.begin(), impl->nodes.end(), [](auto const& node) {
         return node.kind == MolangKind::Call && node.text == "ysm.bone_transparency";
     });
+}
+std::set<std::string> MolangProgram::assignedModelVariables() const {
+    std::set<std::string> fields;
+    if (impl) for (auto const& node : impl->nodes) {
+        if (node.kind != MolangKind::Assign) continue;
+        auto const& target = impl->nodes[node.children.front()];
+        if (target.kind == MolangKind::Variable && target.text.starts_with("variable.")
+            && !target.text.starts_with(roamingPrefix)) fields.insert(target.text);
+    }
+    return fields;
 }
 std::set<std::string> MolangProgram::roamingFields() const {
     std::set<std::string> fields;
@@ -1540,7 +1601,7 @@ MolangFunctionLibrary::MolangFunctionLibrary(std::vector<std::pair<std::string, 
         }
     }
 }
-MolangValue MolangFunctionLibrary::call(std::string const& name, MolangContext& context, std::span<MolangValue const> arguments) const {
+MolangValue MolangFunctionLibrary::call(std::string_view name, MolangContext& context, std::span<MolangValue const> arguments) const {
     auto found = callables.find(name);
     if (found == callables.end()) return {};
     return found->second.invoke(context, MolangValue(std::vector<MolangValue>(arguments.begin(), arguments.end())));

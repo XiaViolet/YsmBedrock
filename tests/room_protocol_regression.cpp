@@ -1,5 +1,6 @@
 #include "RoomProtocol.h"
 #include <algorithm>
+#include <deque>
 #include <iostream>
 #include <stdexcept>
 
@@ -105,6 +106,25 @@ struct Lab {
         }));
     }
 };
+void flightAndAuthorFormSnapshots() {
+    Lab l; auto asset=model('b'); l.a.owns(asset);
+    auto pose=state("skin"); pose.flight=1u; pose.formValues={{"variable.t7",2},{"variable.t8",6}};
+    l.a.room->publish(asset,pose); l.join("A"); l.run(20);
+    l.join("B"); l.run(20);
+    auto const& first=l.b.room->frame().players.at("A");
+    check(first.flight==1u && first.formValues==pose.formValues,"late join flight and authored face state");
+    pose.flight=0u; pose.formValues["variable.t8"]=0;
+    l.a.room->publish(asset,pose); l.run(10);
+    for (auto* node : {&l.host,&l.b}) {
+        auto const& stopped=node->room->frame().players.at("A");
+        check(stopped.flight==0u && stopped.formValues.at("variable.t8")==0,"landing and expression reset");
+    }
+    pose.flight=2u; l.a.room->publish(asset,pose); l.run(10);
+    check(l.b.room->frame().players.at("A").flight==2u,"elytra flight independent of creative flight");
+    pose.flight.reset();pose.formValues.clear();l.a.room->publish(asset,pose);l.run(10);
+    auto const& legacy=l.b.room->frame().players.at("A");
+    check(!legacy.flight && legacy.formValues.empty(),"older peer has no authoritative flight state");
+}
 void distribution(){
     Lab l;auto h=model('a'),a=model('b'),b=model('c'),privateModel=model('d');
     l.host.owns(h);l.a.owns(a);l.b.owns(b);l.a.owns(privateModel);
@@ -192,11 +212,214 @@ void failure(){
     l.a.room->publish(a,state(""));l.run(100);
     check(!l.host.files.has(a) && l.host.room->statuses().at(a.contentKey).starts_with("failed"),"corrupt file retained");
     check(!l.b.files.has(a) && l.b.room->statuses().at(a.contentKey).starts_with("failed"),"upstream failure not propagated");
-    l.a.room->publish(b,state(""));l.run(400);
+    l.a.room->publish(b,state(""));l.run(760);
     check(!l.host.files.has(b) && l.host.room->statuses().at(b.contentKey).find("timed out")!=std::string::npos,"lost chunks never timed out");
-    check(l.chunks("A","H",b)==3,"unbounded retry count");
+    auto attempts=std::ranges::count_if(l.trace,[&](auto const& m){
+        return m.from=="H" && m.to=="A" && m.h.at("t")=="want" && m.h.at("key")==b.contentKey;
+    });
+    check(attempts==3 && l.chunks("A","H",b)==3*static_cast<int>((b.size+RoomProtocol::chunkSize-1)/RoomProtocol::chunkSize),"unbounded retry count");
     check(l.host.files.partial.empty() && l.b.files.partial.empty(),"failed transfers kept partial files");
+    auto streamId=l.b.room->frame().players.at("A").session;
+    l.deliver=[](auto&){return true;};
+    l.b.room->retry("A","stale");l.run(8);
+    check(!l.host.files.has(b),"stale retry revived host download");
+    l.b.room->retry("A",streamId);l.run(150);
+    check(l.host.files.has(b) && l.b.files.has(b),"single guest retry did not recover both hops");
     std::cout<<"PASS integrity rejection, upstream failure propagation, bounded retries and cleanup\n";
+}
+void manualRecovery(bool byUploader){
+    Lab l;auto a=model('b',150000);l.a.owns(a);l.a.room->publish(a,state("outfit","dance"));
+    l.join("A");l.join("B");
+    l.deliver=[](auto& m){return !(m.from=="A" && m.h.at("t")=="chunk");};
+    l.run(800);
+    check(l.host.room->statuses().at(a.contentKey).starts_with("failed") &&
+          l.b.room->statuses().at(a.contentKey).starts_with("failed"),"both hops must have latched the failure");
+    auto session=l.b.room->session(),streamId=l.b.room->frame().players.at("A").session;
+    struct Delivery {Ms due;Lab::Sample msg;};
+    std::deque<Delivery> delayed;
+    int attempts=0,acksDropped=0;
+    l.deliver=[&](auto& m){
+        if(m.h.at("t")=="retry_model" && ++attempts==1)return false;
+        if(m.h.contains("retry_ack") && !acksDropped++){return false;}
+        delayed.push_back({l.now+800,m});return false;
+    };
+    if(byUploader){
+        check(l.a.room->canRetryUpload(),"wearer has no upload retry");
+        l.a.room->retryUpload();l.a.room->retryUpload();
+    }else{
+        l.b.room->retry("A",streamId);l.b.room->retry("A",streamId);
+    }
+    for(int n=0;n<1000;++n){
+        while(!delayed.empty() && delayed.front().due<=l.now){
+            auto& m=delayed.front().msg;l.peer(m.to).room->receive(m.to=="H"?m.from:"",m.bytes,l.now);delayed.pop_front();
+        }
+        l.step();
+    }
+    check(attempts==3 && acksDropped>=2,"lost request/response did not recover with bounded retransmission");
+    check(l.host.files.has(a) && l.b.files.has(a) && l.b.room->session()==session &&
+        l.b.room->frame().players.at("A").session==streamId,"same room recovery lost wearer or file");
+    check(l.b.files.writes.size()==1 && l.host.files.writes.size()==1,"duplicate retry committed the same file twice");
+    std::cout<<"PASS 1600 ms simulated RTT, "<<(byUploader?"wearer upload":"observer download")
+        <<" retry, first control and first acknowledgement lost, A -> host -> B verified in the original session\n";
+}
+void retryAfterAllControlsLost(){
+    Lab l;auto a=model('b');l.a.owns(a);l.a.room->publish(a,state(""));l.join("A");l.join("B");
+    int dropped=0;
+    l.deliver=[&](auto& m){
+        if(m.h.at("t")=="retry_model"){++dropped;return false;}
+        return !(m.from=="A" && m.h.at("t")=="chunk");
+    };
+    l.run(800);l.a.room->retryUpload();
+    for(int i=0;i<320 && dropped<3;++i)l.step();
+    check(dropped==3 && !l.host.files.has(a),"fixture lost all three upload requests");
+    l.deliver=[](auto&){return true;};l.a.room->retryUpload();l.run(40);
+    check(l.host.files.has(a) && l.b.files.has(a),"a new click was ignored after exhausting control retries");
+    std::cout<<"PASS second manual upload after all three previous requests were lost, same room\n";
+}
+void retryMissingPublication(){
+    Lab l;auto a=model('b');l.a.owns(a);l.a.room->publish(a,state("skin"));
+    l.deliver=[](auto& msg){return !(msg.from=="A" && msg.h.at("t")=="publish");};
+    l.join("A");l.join("B");l.run(30);
+    check(l.a.room->connected() && !l.a.room->frame().approved && l.host.room->frame().players.empty(),
+        "missing initial publication fixture");
+    check(l.a.room->canRetryUpload(),"unacknowledged publication has no upload retry");
+    auto room=l.a.room->session();
+    l.deliver=[](auto&){return true;};l.a.room->retryUpload();l.run(200);
+    check(l.a.room->session()==room && l.a.room->frame().approved && l.host.files.has(a) && l.b.files.has(a),
+        "a lost publication required rejoining");
+    RoomRules denied;denied.sessionDenied.insert(a.contentKey);l.host.room->setRules(denied);l.run(5);
+    check(!l.a.room->canRetryUpload(),"uploader can retry a refused model");
+    std::cout<<"PASS missing first publication: wearer restored the model with the original room and selection\n";
+}
+void retryPartialAndCached(){
+    Lab l;auto a=model('c',400000);l.host.owns(a);l.host.room->publish(a,state(""));l.join("B");
+    Lab::Sample oldChunk;
+    l.deliver=[&](auto& m){
+        if(m.h.at("t")=="chunk" && m.h.at("off")>=RoomProtocol::chunkSize){oldChunk=m;return false;}
+        return true;
+    };
+    l.run(30);auto before=l.b.room->progress().at(a.contentKey).received;
+    check(before==RoomProtocol::chunkSize && !oldChunk.bytes.empty(),"partial download fixture");
+    auto streamId=l.b.room->frame().players.at("H").session;
+    l.b.room->retry("H",streamId);
+    l.b.room->receive("",oldChunk.bytes,l.now);
+    check(l.b.room->progress().at(a.contentKey).received==before,"stale window consumed after manual restart");
+    l.deliver=[](auto&){return true;};
+    auto mark=l.trace.size();l.run(120);
+    check(l.b.files.has(a),"in-progress retry failed");
+    for(auto i=mark;i<l.trace.size();++i)if(l.trace[i].h.at("t")=="want")
+        check(l.trace[i].h.at("off")>=before,"retry downloaded the accepted prefix again");
+    auto count=l.chunks("H","B",a);l.host.room->retryUpload();l.run(60);
+    check(count==l.chunks("H","B",a),"valid cache downloaded again");
+    RoomRules rules;rules.sessionDenied.insert(a.contentKey);l.host.room->setRules(rules);l.run(10);
+    l.b.room->retry("H",streamId);l.host.room->retryUpload();l.run(80);
+    check(!l.host.room->canRetryUpload() && !l.b.room->frame().players.contains("H") &&
+        count==l.chunks("H","B",a),"retry bypassed room refusal");
+    std::cout<<"PASS partial download resumes at accepted offset, stale window ignored, valid cache reused, denied model stays denied\n";
+}
+Ms delayedTransfer(bool windowed,std::size_t limit,bool loseOne=false){
+    Lab l; auto asset=model('a',(2u<<20)+13);
+    RoomRules rules;rules.bytesPerSecond=limit;
+    l.host.room->setRules(rules);l.b.room->setRules(rules);
+    l.host.owns(asset);l.host.room->publish(asset,state(""));l.join("B");
+    struct Delivery {Ms due; Lab::Sample packet;};
+    std::deque<Delivery> queue;
+    bool sawWindow=false,sawSpeed=false;
+    l.deliver=[&](auto& msg){
+        if(!windowed && (msg.h.at("t")=="hello" || msg.h.at("t")=="welcome")){
+            msg.h.erase("chunk_windows");msg.bytes=packet(msg.h);
+        }
+        if(msg.h.at("t")=="want" && msg.h.value("count",1)>1)sawWindow=true;
+        if(loseOne && msg.h.at("t")=="chunk" && msg.h.at("off")==RoomProtocol::chunkSize){
+            loseOne=false;return false;
+        }
+        queue.push_back({l.now+100,msg});return false;
+    };
+    auto start=l.now;
+    for(unsigned i=0;i<1600 && !l.b.files.has(asset);++i){
+        while(!queue.empty() && queue.front().due<=l.now){
+            auto& p=queue.front().packet;
+            l.peer(p.to).room->receive(p.to=="H"?p.from:"",p.bytes,l.now);queue.pop_front();
+        }
+        l.step();
+        auto progress=l.b.room->progress();
+        if(progress.contains(asset.contentKey) && progress.at(asset.contentKey).bytesPerSecond>0)sawSpeed=true;
+    }
+    auto elapsed=l.now-start;
+    check(sawWindow==windowed && sawSpeed && l.b.files.has(asset),"window negotiation, receive rate or delayed transfer failed");
+    check((asset.size-16*RoomProtocol::chunkSize)*1000<=limit*elapsed,"sustained download exceeded configured limit");
+    l.run(48);check(l.b.room->downloadBytesPerSecond()==0,"idle download meter did not decay");
+    return elapsed;
+}
+void transferWindows(){
+    auto legacy=delayedTransfer(false,1u<<20);
+    auto windowed=delayedTransfer(true,1u<<20);
+    auto capped=delayedTransfer(true,256u<<10);
+    auto recovered=delayedTransfer(true,1u<<20,true);
+    check(windowed*3<legacy && capped>windowed && recovered>windowed,"window/limit/loss regression");
+    std::cout<<"PASS 2 MiB+13 bytes, simulated 200 ms RTT: legacy="<<legacy<<" ms, windowed="<<windowed
+             <<" ms, 256 KiB/s cap="<<capped<<" ms, one dropped block="<<recovered<<" ms\n";
+}
+void peerTransferRates(){
+    Lab l;auto file=model('a',3u<<20);
+    l.a.owns(file);l.a.room->publish(file,state(""));l.join("A");l.join("B");l.run(12);
+    l.host.room->updateRates({{"B",8192}},8192,l.now);l.step();
+    auto rates=l.b.room->peerRates();
+    check(rates.contains("A") && rates.at("A").upload>0 && !rates.contains("B"),"guest did not see uploader measured by host");
+    check(l.a.room->peerRates().at("B").download==8192,"guest did not see other client's file download");
+    l.run(73);check(l.b.room->peerRates().empty(),"stale relay rate persisted");
+    l.leave("A");l.host.room->updateRates({},0,l.now);l.step();
+    check(!l.b.room->peerRates().contains("A"),"disconnected uploader rate persisted");
+    std::cout<<"PASS host-measured per-peer rates visible to other guests; stale and disconnected rates removed\n";
+}
+void pausedTransfer(bool revoke){
+    Lab l;
+    std::vector<RelayAsset> shared;
+    for(char id:{'a','b','c','d'}){
+        auto file=model(id,1024*1024);l.host.owns(file);shared.push_back(file);
+    }
+    auto victim=shared.back();
+    l.host.room->share({victim});l.join("B");l.run(15);
+    l.host.room->share(shared);l.run(6);
+    auto before=l.b.files.partial.at(victim.digest).size();
+    check(before>0 && before<victim.size,"preemption setup");
+    auto urgent=model('e',300000);l.host.owns(urgent);l.host.room->publish(urgent,state("urgent"));
+    for(int i=0;i<30 && l.b.room->statuses().at(victim.contentKey)!="paused";++i)l.step();
+    check(l.b.room->statuses().at(victim.contentKey)=="paused","partial file was not paused");
+    auto saved=l.b.room->progress().at(victim.contentKey);
+    check(saved.received>=before && saved.received==l.b.files.partial.at(victim.digest).size() && saved.total==victim.size,"lost paused bytes");
+    auto first=l.trace.size();
+    if(revoke){
+        RoomRules rules;rules.sessionDenied.insert(victim.contentKey);l.host.room->setRules(rules);l.run(20);
+        check(!l.b.files.partial.contains(victim.digest) && !l.b.room->progress().contains(victim.contentKey),"revocation kept paused file");
+    }else{
+        l.run(800);
+        auto request=std::find_if(l.trace.begin()+first,l.trace.end(),[&](auto const& msg){
+            return msg.from=="B" && msg.h.at("t")=="want" && msg.h.at("key")==victim.contentKey;
+        });
+        check(request!=l.trace.end() && request->h.at("off")==saved.received,"resume restarted at wrong offset");
+        check(l.b.files.has(victim) && l.b.files.has(urgent),"resumed transfer failed final integrity");
+    }
+    std::cout<<"PASS preempted file retained "<<saved.received<<" bytes; "<<(revoke?"revocation deleted partial":"resumed from exact offset and verified")<<".\n";
+}
+void displayReports(){
+    Lab l;auto a=model('a');l.a.owns(a);l.a.room->publish(a,state("red"));l.join("A");l.join("B");l.run(40);
+    auto streamId=l.b.room->frame().players.at("A").session;
+    check(l.host.room->observers().at("B").at("A").stage=="unreported","cache claimed rendering");
+    RoomDisplays seen{{"A",{streamId,"preparing"}}};
+    l.b.room->reportDisplays(seen);l.run(5);
+    check(l.host.room->observers().at("B").at("A").stage=="preparing","no preparation report");
+    auto previous=std::find_if(l.trace.rbegin(),l.trace.rend(),[](auto const& e){return e.h.at("t")=="display";})->bytes;
+    auto start=l.trace.size();
+    for(int i=0;i<8;++i){l.b.room->reportDisplays(seen);l.step();}
+    check(std::none_of(l.trace.begin()+start,l.trace.end(),[](auto const& e){return e.h.at("t")=="display";}),"unchanged display stage spammed wire");
+    seen["A"].stage="displayed";l.b.room->reportDisplays(seen);l.run(5);
+    l.host.room->receive("B",previous,l.now);
+    check(l.host.room->observers().at("B").at("A").stage=="displayed","stale receipt overrode displayed");
+    l.a.room->publish(a,state("blue"));l.run(5);l.host.room->receive("B",previous,l.now);
+    check(l.host.room->observers().at("B").at("A").stage=="unreported","outfit switch kept old receipt");
+    l.leave("B");check(!l.host.room->observers().contains("B"),"departed observer survived");
+    std::cout<<"PASS authenticated per-observer stages, unchanged-state coalescing, stale receipt and disconnect cleanup.\n";
 }
 void asyncFinish(){
     Lab l;auto a=model('a',32768),b=model('b',35000);l.a.owns(a);l.b.owns(b);
@@ -290,6 +513,7 @@ void formatsAndEvents(){
 }
 }
 int main(){
-    try{distribution();authorization();priorityAndStale();failure();asyncFinish();formatsAndEvents();selectionAcknowledgement();vanillaIdle();return 0;}
+    flightAndAuthorFormSnapshots();
+    try{distribution();authorization();priorityAndStale();failure();manualRecovery(false);manualRecovery(true);retryAfterAllControlsLost();retryMissingPublication();retryPartialAndCached();pausedTransfer(false);pausedTransfer(true);displayReports();asyncFinish();formatsAndEvents();selectionAcknowledgement();vanillaIdle();transferWindows();peerTransferRates();return 0;}
     catch(std::exception const& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}
 }

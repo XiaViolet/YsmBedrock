@@ -4,6 +4,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <span>
 #include <vector>
 
@@ -16,6 +17,27 @@ struct BoneVisual {
     bool cutout = false;
     bool operator==(BoneVisual const&) const = default;
 };
+// The opaque eye layer needs depth from a matching cutout draw. Glint,
+// damage overlays, custom alpha and tint keep their native materials.
+inline bool supportsArkeGlowLayer(BoneVisual const& v, std::string_view material) {
+    auto base = material.substr(0, material.find('.'));
+    return v.glow == 15 && v.alpha == 255 && v.color == BoneVisual{}.color
+        && (base == "entity_alphatest" || base == "entity_alphatest_one_sided");
+}
+// A cloned native mesh has no stable address in the preparation cache.
+// The caller already established the draw owner. Require every non-null
+// palette slot to belong to it and at least one YSM-generated part name.
+template<class Parts, class Resolve>
+bool resolveOwnedPalette(Parts const& parts, std::span<BoneVisual> result, Resolve&& resolve) {
+    bool recognized = false;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        if (!parts[i]) return false;
+        auto const& name = parts[i]->mName->getString();
+        if (!resolve(name, result[i])) return false;
+        recognized |= name.starts_with("__ysm_");
+    }
+    return recognized;
+}
 using BoneVisuals = std::map<std::string, BoneVisual>;
 struct BoneVisualPass {
     BoneVisual visual;

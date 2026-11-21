@@ -67,7 +67,10 @@ Json withDefaultAnimations(Json document, bool firstPerson, Json const& geometry
             auto const& source = clip.at("bones");
             auto& bones = clips.at(name).at("bones");
             for (auto const& [numbered, base, alternateArm] : aliases) {
-                if (!lance && !alternateArm) continue;
+                // A second grip can be an independently toggled item. Copying
+                // the primary lance's scale here would unhide that extra item.
+                bool itemLocator = base == "RightHandLocator" || base == "LeftHandLocator";
+                if (!alternateArm && (!lance || itemLocator)) continue;
                 if (auto track = source.find(base); track != source.end() && !bones.contains(numbered)) bones[numbered] = *track;
             }
         }

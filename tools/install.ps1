@@ -18,7 +18,7 @@ $destination = [IO.Path]::GetFullPath((Join-Path $instanceRoot 'mods/YsmBedrock'
 $stage = Join-Path ([IO.Path]::GetTempPath()) ('ysm-install-' + [Guid]::NewGuid().ToString('N'))
 $required = @('manifest.json','YsmBedrock.dll','YsmLegacyV3.dll','THIRD_PARTY_NOTICES.md')
 function Test-ManagedFile([string]$name) {
-    $name -cin $required -or $name -ceq 'target-render-probe.enable' -or $name -cmatch '^models/ysm-wine-fox\.(zip|ysm)$' -or
+    $name -cin $required -or $name -cin @('target-render-probe.enable','mouse-diagnostics.enable') -or $name -cmatch '^models/ysm-(?:magical-)?wine-fox\.(zip|ysm)$' -or
         $name.StartsWith('resource_packs/',[StringComparison]::Ordinal) -or $name.StartsWith('licenses/',[StringComparison]::Ordinal)
 }
 function Get-TargetPath([string]$base,[string]$name) {
@@ -35,6 +35,18 @@ function Assert-NoLink([string]$path) {
             throw "Install target is a link: $path"
         }
         $path = [IO.Path]::GetDirectoryName($path)
+    }
+}
+function Get-OfficialModels([string]$root) {
+    $version = [version](Get-Content -LiteralPath "$root/manifest.json" -Raw -Encoding utf8 | ConvertFrom-Json).version
+    $ids = @('wine-fox')
+    if ($version -ge [version]'0.29.37') { $ids += 'magical-wine-fox' }
+    foreach ($id in $ids) {
+        $record = Get-Content -LiteralPath "$root/licenses/$id-source.json" -Raw -Encoding utf8 | ConvertFrom-Json
+        if ($record.filename -cnotin @("ysm-$id.zip","ysm-$id.ysm") -or $record.sha256 -notmatch '^[a-f0-9]{64}$') {
+            throw "Invalid bundled model record: $id"
+        }
+        $record
     }
 }
 try {
@@ -72,11 +84,14 @@ try {
         }
         Copy-Item -LiteralPath "$binaries/YsmBedrock.dll","$binaries/YsmLegacyV3.dll","$content/manifest.json","$content/THIRD_PARTY_NOTICES.md" -Destination $payload
         Copy-Item -LiteralPath "$content/resource_packs","$content/licenses" -Destination $payload -Recurse
-        $record = Get-Content -LiteralPath "$content/licenses/wine-fox-source.json" -Raw -Encoding utf8 | ConvertFrom-Json
-        if ($record.filename -cnotmatch '^ysm-wine-fox\.(zip|ysm)$') { throw 'Invalid official model filename' }
         [void][IO.Directory]::CreateDirectory("$payload/models")
-        Copy-Item -LiteralPath (Join-Path $modelDir $record.filename) -Destination "$payload/models"
+        foreach ($record in (Get-OfficialModels $content)) {
+            Copy-Item -LiteralPath (Join-Path $modelDir $record.filename) -Destination "$payload/models"
+        }
         [IO.File]::WriteAllBytes("$payload/target-render-probe.enable",[byte[]]@())
+        if (Test-Path -LiteralPath "$bundled/mouse-diagnostics.enable" -PathType Leaf) {
+            [IO.File]::WriteAllBytes("$payload/mouse-diagnostics.enable",[byte[]]@())
+        }
     }
     foreach ($file in ($required + @('resource_packs/ysm_particles/manifest.json','licenses/YSM-Apache-2.0.txt','target-render-probe.enable'))) {
         if (!(Test-Path -LiteralPath (Join-Path $payload $file) -PathType Leaf)) { throw "Missing package file: $file" }
@@ -85,10 +100,14 @@ try {
     if ($manifest.name -cne 'YsmBedrock' -or $manifest.entry -cne 'YsmBedrock.dll' -or $manifest.platform -cne 'client') {
         throw '工程包的模组清单不匹配'
     }
-    $record = Get-Content -LiteralPath "$payload/licenses/wine-fox-source.json" -Raw -Encoding utf8 | ConvertFrom-Json
-    $models = @(Get-ChildItem -LiteralPath "$payload/models" -File)
-    if ($models.Count -ne 1 -or $record.filename -cnotmatch '^ysm-wine-fox\.(zip|ysm)$' -or $models[0].Name -cne $record.filename -or
-        (Get-FileHash -LiteralPath $models[0].FullName -Algorithm SHA256).Hash -ne $record.sha256) { throw '官方酒狐模型文件校验失败' }
+    $expected = @{}
+    foreach ($record in (Get-OfficialModels $payload)) {
+        $expected[$record.filename] = $record.sha256
+        if ((Get-FileHash -LiteralPath (Join-Path "$payload/models" $record.filename)).Hash -ne $record.sha256) {
+            throw "Bundled model verification failed: $($record.filename)"
+        }
+    }
+    if (@(Get-ChildItem -LiteralPath "$payload/models" -File).Count -ne $expected.Count) { throw 'Unexpected bundled models' }
     $newInstall = !(Test-Path -LiteralPath "$destination/manifest.json" -PathType Leaf)
     $copies = @(foreach ($file in Get-ChildItem -LiteralPath $payload -File -Recurse -Force) {
         $name = $file.FullName.Substring($payload.Length+1).Replace('\','/')
@@ -102,7 +121,7 @@ try {
             $reuse = $false
             while (Test-Path -LiteralPath $target) {
                 if ([IO.File]::Exists($target) -and (Get-Item -LiteralPath $target).Length -eq $file.Length -and
-                    (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -eq $record.sha256) { $reuse=$true; break }
+                    (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -eq $expected[$file.Name]) { $reuse=$true; break }
                 $index++
                 $target = Get-TargetPath $destination ("models/" + $file.BaseName + "-official-" + $index + $file.Extension)
                 Assert-NoLink $target

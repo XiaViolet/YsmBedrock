@@ -59,10 +59,42 @@ ModelUiBindings::ModelUiBindings(Json const& descriptor) {
                 if(!program.is_string())throw std::runtime_error("Invalid model UI label program");
                 binding.labels.emplace_back(program.get<std::string>());
             }
+            formVariables.merge(binding.write.assignedModelVariables());
+            for (auto const& label : binding.labels) formVariables.merge(label.assignedModelVariables());
             if(!forms.emplace(id+"/"+std::to_string(index++),std::move(binding)).second)
                 throw std::runtime_error("Duplicate model UI route");
         }
     }
+}
+std::map<std::string,float> ModelUiBindings::snapshotScalars(MolangContext const& context) const {
+    std::map<std::string,float> result;
+    for (auto const& name : formVariables) {
+        if (name.size() > 96) continue;
+        auto it = context.variables.find(name);
+        if (it == context.variables.end()) continue;
+        auto const& value = it->second;
+        if (!value.present() || value.isArray() || value.isRecord() || value.isString()) continue;
+        auto number = static_cast<float>(value.number());
+        if (std::isfinite(number)) result.emplace(name, number);
+        if (result.size() == 128) break;
+    }
+    return result;
+}
+bool ModelUiBindings::applyScalars(MolangContext& context, std::map<std::string,float> const& previous,
+    std::map<std::string,float> const& next) const {
+    bool changed = false;
+    for (auto const& [name, value] : previous)
+        if (!next.contains(name) && formVariables.contains(name)) changed |= context.variables.erase(name) != 0;
+    for (auto const& [name, value] : next) {
+        if (!formVariables.contains(name) || !std::isfinite(value)) continue;
+        auto current = context.variables.find(name);
+        MolangValue restored(static_cast<double>(value));
+        if (current == context.variables.end() || !(current->second == restored)) {
+            context.writeVariable(name, std::move(restored));
+            changed = true;
+        }
+    }
+    return changed;
 }
 Json ModelUiBindings::observe(MolangContext const& context) const {
     Json values=Json::object();
@@ -99,7 +131,7 @@ std::set<std::string> ModelUiBindings::roamingFields() const {
 }
 Json YsmUi::defaultSettings() { return {{"sound_volume",100},{"disable_self_model",false},{"disable_self_hands",false},
     {"disable_projectile_model",false},{"disable_vehicle_model",false},{"print_animation_roulette_msg",true},
-    {"movement_lock",false},{"disable_other_models",false},{"show_hud_avatar",false},{"native_menu_preview",true},
+    {"movement_lock",false},{"disable_other_models",false},{"show_hud_avatar",false},{"arke_extra_emissive_layer",false},{"native_menu_preview",true},{"relative_menu_pointer",false},
     {"hud_fps",30},{"hud_x",12},{"hud_y",82},{"hud_size",40},{"hud_yaw",50},{"favorites",Json::array()},
     {"hidden_players",Json::array()}}; }
 void YsmUi::update(UiSnapshot value) {
@@ -196,6 +228,7 @@ void YsmUi::activate(std::string const& id) {
     if(id=="wear" && data.browsing && data.browseLoading.empty()){command("wear",data.browsing->source);return;}
     if(id.starts_with("texture:")){command("texture",id.substr(8));return;}
     if(id.starts_with("favorite:")){command("favorite",id.substr(9));return;}
+    if(id=="room_observers"){observersOpen=!observersOpen;playerPage=0;return;}
     if(id.starts_with("room:")){command("room",id.substr(5));return;}
     if(id.starts_with("peer:")){command("peer_visibility",id.substr(5));return;}
     if(id.starts_with("clip:")){previewClip=id.substr(5);return;}
@@ -247,6 +280,12 @@ bool YsmUi::key(int key,bool down,bool control,std::string text,bool shift) {
     if(key==13&&isWheel()&&wheelHovered>=0){chooseWheel(wheelHovered);return true;}
     if(isWheel()&&!blocksMovement()&&(key==87||key==65||key==83||key==68||key==32||key==16||key==17))return false;
     return true;
+}
+void YsmUi::cancelPointer() {
+    mouseX = mouseY = -1;
+    wheelHovered = -1;
+    previewDrag.reset();
+    dragging.reset();
 }
 bool YsmUi::mouse(int button,int value,float x,float y) {
     if(!isOpen())return false;mouseX=x;mouseY=y;

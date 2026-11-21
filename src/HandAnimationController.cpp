@@ -71,7 +71,7 @@ HandAnimationController::HandAnimationController(Json const& animations) {
         fallbackClips.insert(name.get<std::string>());
     for (auto const& [name, clip] : animations.at("animations").items()) {
         clips.insert(name);
-        clipOrder.push_back(name);
+        conditions.add(name);
     }
 }
 std::string HandAnimationController::select(std::string const& prefix, HandItem const& item, bool holding) const {
@@ -80,11 +80,7 @@ std::string HandAnimationController::select(std::string const& prefix, HandItem 
     if (holding && item.charged) if (auto name = present(prefix + ":charged_crossbow"); !name.empty()) return name;
     if (holding && item.fishing) if (auto name = present(prefix + ":fishing"); !name.empty()) return name;
     if (auto name = present(prefix + "$" + item.id); !name.empty()) return name;
-    // Match declared tags in clip declaration order, as in YSM's condition map.
-    for (auto const& name : clipOrder) if (name.starts_with(prefix + "#")) {
-        auto tag = name.substr(prefix.size() + 1);
-        if (std::find(item.tags.begin(), item.tags.end(), tag) != item.tags.end()) return name;
-    }
+    if (auto clip = conditions.matchingTag(prefix, item.tags); !clip.empty()) return clip;
     if (item.isLance()) {
         auto lance = present(prefix + ":lance");
         if (!lance.empty() && !fallbackClips.contains(lance)) return lance;

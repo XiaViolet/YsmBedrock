@@ -535,17 +535,17 @@ static ysm::Json controllers(ysm::Json const& document, ysm::Json const& input, 
         auto sampleStarted = std::chrono::steady_clock::now();
         double time = frame.at("time").get<double>();
         bool observing = frame.value("observe", false);
-        std::optional<ysm::AnimationEvaluation> observation;
+        std::optional<ysm::MolangContext> observation;
         auto observerQueries = entityQueries;
-        if (observing) observation = evaluation.forObservation();
-        auto& current = observing ? *observation : evaluation;
+        if (observing) observation = evaluation.expressions.forObservation();
+        auto& current = observing ? *observation : evaluation.expressions;
         auto hostFrame = frame;
         if (replaced) {
             if (!hostFrame.contains("entity")) hostFrame["entity"] = ysm::Json::object();
             hostFrame["entity"]["is_player"] = false;
         }
-        inputContext(current.expressions, hostFrame, observing ? observerQueries : entityQueries);
-        current.expressions.localSync = frame.value("local_sync", input.value("local_sync", false));
+        inputContext(current, hostFrame, observing ? observerQueries : entityQueries);
+        current.localSync = frame.value("local_sync", input.value("local_sync", false));
         ysm::Pose pose;
         auto handled = ysm::Json::object();
         if (player || replaced) {
@@ -633,23 +633,23 @@ static ysm::Json controllers(ysm::Json const& document, ysm::Json const& input, 
         }
         if (timingOnly) {
             ysm::Json row = {{"sample_us", sampleUs}, {"pose_bones", pose.size()},
-                {"variables", current.expressions.variables.size() + current.expressions.localVariables.size()}};
+                {"variables", current.variables.size() + current.localVariables.size()}};
             if (profileForms) {
                 auto started = std::chrono::steady_clock::now();
-                auto values = profileForms->observe(current.expressions);
+                auto values = profileForms->observe(current);
                 row["form_observation_us"] = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - started).count();
                 row["form_count"] = values.size();
             }
             frames.push_back(std::move(row));
             continue;
         }
-        frames.push_back({{"pose", ysm::AnimationSampler::report(pose)}, {"variables", variables(current.expressions)},
-            {"bone_visuals", boneVisuals(current.expressions)}, {"logical_bone_visuals", boneVisuals(evaluation.expressions)},
+        frames.push_back({{"pose", ysm::AnimationSampler::report(pose)}, {"variables", variables(current)},
+            {"bone_visuals", boneVisuals(current)}, {"logical_bone_visuals", boneVisuals(evaluation.expressions)},
             {"sync_dispatches", evaluation.expressions.syncDispatches},
             {"handled", handled}, {"controllers", runtime.report()}, {"observation", observing}, {"sound_cues", std::move(sounds)},
             {"particle_cues", std::move(particles)},
-            {"observation_failures", observing ? current.expressions.failures - evaluation.expressions.failures : 0},
-            {"observation_diagnostics", observing ? ysm::Json(current.expressions.diagnostics) : ysm::Json::array()},
+            {"observation_failures", observing ? current.failures - evaluation.expressions.failures : 0},
+            {"observation_diagnostics", observing ? ysm::Json(current.diagnostics) : ysm::Json::array()},
             {"logical_variables", variables(evaluation.expressions)}, {"owner_frame", evaluation.expressions.frame},
             {"owner_time", evaluation.lastTime}, {"physics_time", evaluation.expressions.physics ? evaluation.expressions.physics->time() : 0},
             {"physics_states", evaluation.expressions.physics ? evaluation.expressions.physics->size() : 0},
@@ -966,26 +966,37 @@ int wmain(int argc, wchar_t** argv) {
                 snapshot.descriptor=j.value("descriptor",snapshot.descriptor);snapshot.language=j.value("language",snapshot.language);
                 if (pack) snapshot.language=ysm::modelLanguage(pack->languages,snapshot.locale);
                 snapshot.catalog=j.value("catalog",snapshot.catalog);snapshot.settings=j.value("settings",ysm::YsmUi::defaultSettings());
+                snapshot.players=j.value("players",snapshot.players);snapshot.room=j.value("room",snapshot.room);
                 snapshot.values=j.value("values",snapshot.values);snapshot.textures=j.value("textures",snapshot.textures);snapshot.clips=j.value("clips",snapshot.clips);
                 ui.update(snapshot);
             };
             update(input);auto frames=ysm::Json::array();
             for(auto const& e:input.at("events")) {
                 auto op=e.at("op").get<std::string>();
-                if(op=="open")ui.open(e.value("wheel",false));else if(op=="close")ui.close();
+                if(op=="open"){pointer.reset();ui.open(e.value("wheel",false));}else if(op=="close"){pointer.reset();ui.close();}
+                else if(op=="focus_lost"){pointer.reset();ui.cancelPointer();}
                 else if(op=="update")update(e);
                 else if(op=="key")ui.key(e.at("key").get<int>(),e.value("down",true),e.value("control",false),e.value("text",std::string{}),e.value("shift",false));
                 else if(op=="mouse")ui.mouse(e.value("button",0),e.value("value",0),e.at("x").get<float>(),e.at("y").get<float>());
                 else if(op=="window_mouse") {
                     std::optional<ysm::UiPoint> window;
                     if(e.contains("window_x"))window=ysm::UiPoint{e.at("window_x").get<float>(),e.at("window_y").get<float>()};
-                    if(auto point=pointer.feed(e.value("button",0),e.value("x",0.f),e.value("y",0.f),window,e.at("client_width").get<float>(),e.at("client_height").get<float>(),input.value("width",640.f),input.value("height",360.f)))
-                        ui.mouse(e.value("button",0),e.value("value",0),point->x,point->y);
+                    auto w=e.at("client_width").get<float>(),h=e.at("client_height").get<float>();
+                    auto gw=input.value("width",640.f),gh=input.value("height",360.f);
+                    std::optional<ysm::UiPoint> point;
+                    if(e.contains("touch_x"))
+                        point=pointer.contact({e.at("touch_x").get<float>(),e.at("touch_y").get<float>()},w,h,gw,gh);
+                    else if(e.value("poll",false)) {
+                        if(!pointer.usesTouch()) point=pointer.frame(window.value(),w,h,gw,gh);
+                    } else point=pointer.feed(e.value("button",0),e.value("x",0.f),e.value("y",0.f),window,w,h,gw,gh,
+                        {e.value("dx",0.f),e.value("dy",0.f)},e.value("force_relative",false));
+                    if(point) ui.mouse(e.value("button",0),e.value("value",0),point->x,point->y);
                 }
                 else if(op!="draw")throw std::runtime_error("Unknown UI event");
                 auto scene=ui.draw(input.value("width",640.f),input.value("height",360.f),input.value("hotbar_top",-1.f));auto commands=ysm::Json::array();
                 for(auto const& c:ui.takeCommands())commands.push_back({{"kind",c.kind},{"key",c.key},{"value",c.value},{"label",c.label},{"generation",c.generation}});
                 auto frame=ui.report();
+                frame["pointer_source"]=pointer.source();
                 frame["candidate_preview"]=scene.libraryPreview;
                 frame["live_player_preview"]=scene.livePlayerPreview;
                 frame["preview_clip"]=scene.previewClip;
@@ -1015,7 +1026,10 @@ int wmain(int argc, wchar_t** argv) {
             context.roaming.emplace(bindings.roamingFields(),ysm::RoamingRole::Producer,ysm::RoamingLimit::LocalOnly);auto frames=ysm::Json::array();
             for(auto const& e:input.at("events")) {
                 bool changed=false;if(e.value("op",std::string{})=="action")changed=bindings.act(context,e.at("route").get<std::string>(),e.value("value",0.0),e.value("label",-1));
-                frames.push_back({{"changed",changed},{"values",bindings.observe(context)},{"roaming",context.roaming->snapshot()},{"failures",context.failures}});
+                if(e.contains("form_snapshot"))
+                    bindings.applyScalars(context, {}, e.at("form_snapshot").get<std::map<std::string,float>>());
+                frames.push_back({{"changed",changed},{"values",bindings.observe(context)},{"roaming",context.roaming->snapshot()},
+                    {"form_snapshot",bindings.snapshotScalars(context)},{"failures",context.failures}});
             }std::cout<<frames.dump(2)<<'\n';
         } else if (argc == 4 && std::wstring(argv[1]) == L"--preview-mesh") {
             auto options = ysm::Json::parse(utf8(argv[3]));
@@ -1192,6 +1206,8 @@ int wmain(int argc, wchar_t** argv) {
             if (!input.contains("frames")) input["frames"] = ysm::Json::array();
             auto report = controllers(document, input, false, ysm::ControllerPolicy::SourcePackage, false, kind);
             report["target"] = target->summary();
+            if (input.value("include_texture_hash", false))
+                report["target"]["texture"]["rgba_sha256"] = ysm::contentSha256(target->texture.uv->rgba);
             if (input.value("include_document", false)) report["document"] = std::move(document);
             std::cout << report.dump(2) << '\n';
         } else if (argc == 4 && std::wstring(argv[1]) == L"--source-player-animation-file") {
@@ -1293,7 +1309,7 @@ int wmain(int argc, wchar_t** argv) {
                 result.push_back(seats.sides);
             }
             std::cout << result.dump() << '\n';
-        } else if (argc == 4 && std::wstring(argv[1]) == L"--shoulder-locators") {
+        } else if (argc == 4 && (std::wstring(argv[1]) == L"--shoulder-locators" || std::wstring(argv[1]) == L"--passenger-locators")) {
             auto rig = document(argv[2]);
             auto frames = document(argv[3]);
             ysm::AnimationSampler sampler(ysm::Json::object({{"animations", ysm::Json::object()}}), rig);
@@ -1310,7 +1326,11 @@ int wmain(int argc, wchar_t** argv) {
                     pose.rotation = channels.value("rotation", pose.rotation);
                     pose.scale = channels.value("scale", pose.scale);
                 }
-                auto matrix = ysm::shoulderLocator(context, frame.at("left").get<bool>());
+                auto delta = frame.value("vehicle_minus_rider", std::array<float, 3>{});
+                auto matrix = std::wstring(argv[1]) == L"--passenger-locators"
+                    ? ysm::passengerLocator(context, frame.at("seat").get<int>(), frame.value("yaw", 0.f),
+                        {delta[0], delta[1], delta[2]}, frame.value("custom_player", true))
+                    : ysm::shoulderLocator(context, frame.at("left").get<bool>());
                 if (!matrix) { results.push_back(nullptr); continue; }
                 ysm::Json values = ysm::Json::array();
                 for (int column = 0; column < 4; ++column)

@@ -33,6 +33,7 @@ std::atomic<std::uint64_t> collapsedMaterialPasses = 0, unmaskedMixedMeshes = 0;
 std::atomic<std::uint64_t> timedSurfaces = 0, lookupCpuNs = 0, submitCpuNs = 0;
 std::atomic<bool> surfaceRouteSupported = false;
 std::atomic<std::uintptr_t> frameSubmitRva = 0;
+std::atomic<std::uint64_t> arkeLayers = 0, arkeLayerMisses = 0;
 std::mutex sampleMutex;
 Json surfaceSamples = Json::object();
 bool collapsed(glm::mat4 const& matrix) {
@@ -119,6 +120,22 @@ bool replaceLoadedMaterial(mce::MaterialPtr& target, std::string const& name) {
     }
     return false;
 }
+// This Bedrock material tests against depth from the base pass and accepts
+// ordinary RGBA textures. The alpha-encoded emissive material has a
+// different contract and would reinterpret the author's opacity.
+bool selectGlowLayer(MaterialVariants& layer) {
+    for (auto* target : {&*layer.mSkinningMaterialPtr, &*layer.mSkinningColorMaterialPtr}) {
+        auto info = target->mRenderMaterialInfoPtr;
+        if (!info) continue;
+        auto const& original = info->mHashedName->getString();
+        auto suffix = original.find('.');
+        auto name = std::string("entity_emissive_layer_alpha_test") +
+            (suffix == original.npos ? "" : original.substr(suffix));
+        if (!replaceLoadedMaterial(*target, name) || target->mRenderMaterialInfoPtr->mHashedName->getString() != name)
+            return false;
+    }
+    return layer.mSkinningMaterialPtr->mRenderMaterialInfoPtr != nullptr;
+}
 MaterialVariants tintMaterial(MaterialVariants const& source, bool translucent) {
     auto result = source;
     for (auto* target : {&*result.mSkinningMaterialPtr, &*result.mSkinningColorMaterialPtr}) {
@@ -158,7 +175,7 @@ bool skipCollapsedYsmMesh(SkinnedMesh const& mesh) {
 }
 void drawBoneVisuals(SkinnedMesh& mesh, ScreenContext& screen, SortedMeshDrawList* queue,
     RenderController const* controller, MaterialVariants const& material, std::span<BoneVisual const> visuals,
-    void const* data, void (*submit)(void const*, MaterialVariants const&)) {
+    bool arkeWorldPass, void const* data, void (*submit)(void const*, MaterialVariants const&)) {
     auto draw = [&](MaterialVariants const& selected) { submit(data, selected); };
     ++hookCalls;
     if (!frameSubmitRva) if (auto* builder = screen.frameBuilder->get()) {
@@ -173,7 +190,7 @@ void drawBoneVisuals(SkinnedMesh& mesh, ScreenContext& screen, SortedMeshDrawLis
         draw(material);
         return;
     }
-    if (visuals.size() != mesh.mSkinnedParts->size() || visuals.size() != mesh.mBoneMatrices->size()) {
+    if (visuals.size() != mesh.mSkinnedParts->size() || (!plan.uniform && visuals.size() != mesh.mBoneMatrices->size())) {
         ++mismatches;
         draw(material);
         return;
@@ -270,6 +287,14 @@ void drawBoneVisuals(SkinnedMesh& mesh, ScreenContext& screen, SortedMeshDrawLis
         }
         draw(selected);
         ++passes;
+        auto sourceInfo = selected.mSkinningMaterialPtr->mRenderMaterialInfoPtr;
+        if (arkeWorldPass && sourceInfo && supportsArkeGlowLayer(visual, sourceInfo->mHashedName->getString())) {
+            auto layer = selected;
+            if (selectGlowLayer(layer)) {
+                draw(layer);
+                ++arkeLayers;
+            } else ++arkeLayerMisses;
+        }
         if (!queue) { ++immediate; continue; }
         visitPackets(*queue, controller, [&](auto const& key, auto& values) {
             for (std::size_t i = before[key]; i < values.size(); ++i) {
@@ -301,6 +326,7 @@ Json boneVisualRenderReport() {
         {"surface_submit_cpu_us", submitCpuNs.load() / 1000.0},
         {"tinted_passes", tintedPasses.load()}, {"alpha_passes", alphaPasses.load()}, {"glow_passes", glowPasses.load()},
         {"immediate_passes", immediate.load()}, {"missing_blend_materials", missingBlend.load()},
+        {"arke_glow_layers", arkeLayers.load()}, {"arke_glow_layer_misses", arkeLayerMisses.load()},
         {"light_overrides", lightPasses.load()}, {"missing_light_uniforms", missingLight.load()}, {"surface_samples", surfaceSamples},
         {"tint_overrides", tintOverrides.load()}, {"missing_tint_uniforms", missingTint.load()},
         {"surface_route_supported", surfaceRouteSupported.load()}, {"batch_candidates", batchCandidates.load()},

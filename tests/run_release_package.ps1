@@ -12,37 +12,54 @@ function Entries([string]$path){
 $official=Get-Content -LiteralPath "$repo/licenses/wine-fox-source.json" -Raw -Encoding UTF8 | ConvertFrom-Json
 $modelName=$official.filename
 Check ($modelName -ceq 'ysm-wine-fox.zip') 'Unexpected official model release record'
-function Check-Model([string]$path,[string]$entryName){
+$magical=Get-Content -LiteralPath "$repo/licenses/magical-wine-fox-source.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+Check ($magical.filename -ceq 'ysm-magical-wine-fox.zip') 'Unexpected magical model filename'
+function Check-Model([string]$path,[string]$entryName,[string]$expected){
     $outer=[IO.Compression.ZipFile]::OpenRead($path)
     try {
         $model=$outer.GetEntry($entryName)
         Check ($null -ne $model) "Missing official model: $entryName"
         $stream=$model.Open();$hash=[Security.Cryptography.SHA256]::Create()
         try {$digest=[BitConverter]::ToString($hash.ComputeHash($stream)).Replace('-','')} finally {$stream.Dispose();$hash.Dispose()}
-        Check ($digest -eq $official.sha256) "Official model changed: $entryName"
+        Check ($digest -eq $expected) "Official model changed: $entryName"
     } finally {$outer.Dispose()}
 }
 $mod=@(Entries "$base.mcmod")
+$bootArchive="$base-BedrockBoot.zip"
+$bootEntries=@(Entries $bootArchive)
+Check ($bootEntries.Count -eq $mod.Count) 'BedrockBoot payload size differs from mcmod entry count'
+foreach($name in $mod){Check ("YsmBedrock/$name" -cin $bootEntries) "Missing BedrockBoot entry $name"}
 $src=@(Entries "$base-source.zip")
 $engineering=@(Entries "$base-preview.zip")
 foreach($file in @('manifest.json','YsmBedrock.dll','YsmLegacyV3.dll','THIRD_PARTY_NOTICES.md','licenses/YSM-Apache-2.0.txt','resource_packs/ysm_particles/manifest.json','target-render-probe.enable')){
     Check ($file -cin $mod) "Missing install entry $file"
 }
-Check (@($mod -cmatch '^models/').Count -eq 1) 'Runtime must have exactly one bundled model'
-Check (!(($mod -cne "models/$modelName") -match '\.(ysm|zip)$|^source/|^build/|^logs/|^room-(share|cache)/')) 'Unexpected private or development content in mcmod'
-Check (@($src -match '^assets/').Count -eq 1) 'Source must have exactly one bundled model'
-Check (@($engineering -match '/(assets|models)/[^/]+\.(zip|ysm)$').Count -eq 1) 'Engineering bundle contains duplicate or unrelated models'
-Check-Model "$base.mcmod" "models/$modelName"
-Check-Model "$base-source.zip" "assets/$modelName"
-Check-Model "$base-preview.zip" "YsmBedrock-$version-preview/mods/YsmBedrock/models/$modelName"
+Check (@($mod -cmatch '^models/').Count -eq 2) 'Runtime must have exactly two bundled models'
+Check (!(($mod -cne "models/$modelName" -cne "models/$($magical.filename)") -match '\.(ysm|zip)$|^source/|^build/|^logs/|^room-(share|cache)/')) 'Unexpected private or development content in mcmod'
+Check (@($src -match '^assets/').Count -eq 2) 'Source must have exactly two bundled models'
+Check (@($engineering -match '/(assets|models)/[^/]+\.(zip|ysm)$').Count -eq 2) 'Engineering bundle contains duplicate or unrelated models'
+foreach ($sample in @($official,$magical)) {
+    Check-Model "$base.mcmod" "models/$($sample.filename)" $sample.sha256
+    Check-Model $bootArchive "YsmBedrock/models/$($sample.filename)" $sample.sha256
+    Check-Model "$base-source.zip" "assets/$($sample.filename)" $sample.sha256
+    Check-Model "$base-preview.zip" "YsmBedrock-$version-preview/mods/YsmBedrock/models/$($sample.filename)" $sample.sha256
+}
 foreach($file in @('.gitignore','README.md','THIRD_PARTY_NOTICES.md','licenses/YSM-Apache-2.0.txt','xmake.lua','src/Mod.cpp','tools/install.ps1','tools/legacy_v3_bridge/CMakeLists.txt','tests/fixtures/SignedFaceLab.zip')){
     Check ($file -cin $src) "Missing source entry $file"
 }
 Check (!($src -match '(^|/)(\.git|build|vendor|logs|models|room-cache|room-share|__pycache__)/|\.(ysm|exe|dll|log|pdb|pyc)$|(^|/)(ysm|bedrock-live|room-sync)\.json$')) 'Source archive contains runtime or personal data'
-Write-Output 'PASS all three archives carry exactly one pinned official Wine Fox model; root manifest, DLLs, render flag, synthetic fixtures and licenses verified.'
+Write-Output 'PASS all four archives carry both pinned official Wine Fox models; launcher layouts, DLLs, render flag, synthetic fixtures and licenses verified.'
 
 $temp=Join-Path ([IO.Path]::GetTempPath()) ('ysm-install-regression-'+[Guid]::NewGuid().ToString('N'))
 try {
+    $bootMods=Join-Path $temp 'config/BedrockBoot2/levilamina/ll.mods'
+    [IO.Compression.ZipFile]::ExtractToDirectory($bootArchive,$bootMods)
+    $folders=@(Get-ChildItem -LiteralPath $bootMods -Directory)
+    Check ($folders.Count -eq 1 -and $folders[0].Name -ceq 'YsmBedrock') 'Incorrect BedrockBoot mod folder'
+    $info=Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $folders[0].FullName 'manifest.json') | ConvertFrom-Json
+    Check ($info.name -ceq 'YsmBedrock' -and $info.version -ceq $version -and $info.platform -ceq 'client') 'BedrockBoot discovery metadata mismatch'
+    Check (Test-Path -LiteralPath (Join-Path $folders[0].FullName $info.entry) -PathType Leaf) 'BedrockBoot entry DLL missing'
+    Write-Output "PASS isolated BedrockBoot extraction and mod discovery: $($info.name) $($info.version), $($info.entry)."
     $instance=Join-Path $temp 'test instance'
     $modDir=Join-Path $instance 'mods/YsmBedrock'
     foreach($dir in @('.levilauncher','mods/LeviLamina')){[void][IO.Directory]::CreateDirectory((Join-Path $instance $dir))}
@@ -51,7 +68,10 @@ try {
     [IO.File]::WriteAllText("$instance/mods/LeviLamina/manifest.json",'{"version":"26.60.7"}')
     & "$repo/tools/install.ps1" -Instance $instance -Package "$base-preview.zip"
     Check (Test-Path -LiteralPath "$modDir/target-render-probe.enable" -PathType Leaf) 'Fresh install lost render flag'
-    Check (@(Get-ChildItem -LiteralPath "$modDir/models" -Force).Count -eq 1) 'Fresh install has unexpected bundled assets'
+    $mouseDiagnostics = 'mouse-diagnostics.enable' -cin $mod
+    Check ((Test-Path -LiteralPath "$modDir/mouse-diagnostics.enable") -eq $mouseDiagnostics) 'Mouse diagnostics flag differs from package'
+    if ($mouseDiagnostics) { [IO.File]::Delete("$modDir/mouse-diagnostics.enable") }
+    Check (@(Get-ChildItem -LiteralPath "$modDir/models" -Force).Count -eq 2) 'Fresh install has unexpected bundled assets'
     Check ((Get-FileHash -LiteralPath "$modDir/models/$modelName").Hash -eq $official.sha256) 'Official sample failed fresh install'
     $sentinels=@("models/$modelName",'models/private.ysm','room-share/shared.zip','room-cache/private/kept','room-sync.json','custom-preferences.json')
     $value='installation sentinel '+[Guid]::NewGuid().ToString()
@@ -68,7 +88,9 @@ try {
     [IO.Compression.ZipFile]::ExtractToDirectory("$base-preview.zip",$expanded)
     $bundle=Join-Path $expanded "YsmBedrock-$version-preview"
     [IO.File]::WriteAllText("$modDir/YsmBedrock.dll",'old binary')
+    if ($mouseDiagnostics) { [IO.File]::Delete("$modDir/mouse-diagnostics.enable") }
     & "$bundle/install.ps1" -Instance $instance
+    Check ((Test-Path -LiteralPath "$modDir/mouse-diagnostics.enable") -eq $mouseDiagnostics) 'Extracted installer lost mouse diagnostics choice'
     Check (!(Test-Path -LiteralPath "$modDir/target-render-probe.enable")) 'Update re-enabled intentionally removed flag'
     Check ((Get-FileHash -LiteralPath "$modDir/YsmBedrock.dll").Hash -eq (Get-FileHash -LiteralPath "$bundle/mods/YsmBedrock/YsmBedrock.dll").Hash) 'DLL was not updated'
     foreach($file in $sentinels){Check ([IO.File]::ReadAllText((Join-Path $modDir $file)) -ceq $value) "Update overwrote $file"}

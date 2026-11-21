@@ -10,6 +10,7 @@
 #include <set>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <variant>
 #include <vector>
@@ -46,6 +47,7 @@ public:
     double number() const;
     bool present() const { return value.index() != 0; }
     bool isString() const { return value.index() == 2; }
+    std::string const& stringValue() const { return std::get<std::string>(value); }
     bool isArray() const { return value.index() == 3; }
     bool isRecord() const { return value.index() >= 4 && value.index() <= 6; }
     bool isFinite() const {
@@ -89,8 +91,8 @@ struct MolangContext {
     using BoneRig = std::map<std::string, BoneBasis, std::less<>>;
     using Variables = std::unordered_map<std::string, MolangValue>;
     Variables variables, localVariables;
-    std::map<std::string, MolangValue> queries;
-    std::map<std::string, Function> functions;
+    Variables queries;
+    std::unordered_map<std::string, Function> functions;
     BlockLookup blockLookup;
     std::shared_ptr<MolangFunctionLibrary const> library;
     std::shared_ptr<MolangPhysics> physics;
@@ -203,17 +205,18 @@ public:
     bool hasBoneVisualActions() const;
     bool hasBoneTransparency() const;
     std::set<std::string> roamingFields() const;
+    std::set<std::string> assignedModelVariables() const;
 };
 // Shared compiled source; variables, locals, budgets and effects stay in the
 // consuming entity's context. Event order follows source declaration order.
 class MolangFunctionLibrary {
-    std::map<std::string, MolangProgram> callables;
+    std::map<std::string, MolangProgram, std::less<>> callables;
     std::map<std::string, std::vector<MolangProgram>> handlers;
     std::vector<std::string> diagnostics;
 public:
     explicit MolangFunctionLibrary(std::vector<std::pair<std::string, std::string>> const& sources = {});
-    MolangValue call(std::string const& name, MolangContext& context, std::span<MolangValue const> arguments) const;
-    bool contains(std::string const& name) const { return callables.contains(name); }
+    MolangValue call(std::string_view name, MolangContext& context, std::span<MolangValue const> arguments) const;
+    bool contains(std::string_view name) const { return callables.contains(name); }
     std::span<MolangProgram const> events(std::string const& name) const;
     std::vector<std::string> eventNames() const;
     std::set<std::string> roamingFields(bool firstPerson = false) const;

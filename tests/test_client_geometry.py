@@ -257,7 +257,7 @@ class ClientGeometryTests(unittest.TestCase):
         self.assertNotIn('cubes', source)
         self.assertNotIn('rightarm', report['arm_carriers'])
 
-    def test_default_mace_tracks_follow_independent_arm_but_leave_authored_clips_and_extra_grips_alone(self):
+    def test_default_weapon_tracks_follow_independent_arm_but_leave_authored_clips_and_extra_grips_alone(self):
         bones = [{'name':'root'}, {'name':'RightArm','parent':'root'}, {'name':'RightArm3','parent':'root'},
                  {'name':'RightArm4','parent':'RightArm'}, {'name':'RightHandLocator','parent':'RightArm'},
                  {'name':'RightHandLocator3','parent':'RightArm3'}, {'name':'RightHandLocator2','parent':'RightArm'}]
@@ -265,8 +265,10 @@ class ClientGeometryTests(unittest.TestCase):
             path = self.fixture(directory, [], body_bones=bones)
             def clips():
                 return self.inspect(path, '--animation-sets')['body']['animations']
-            for stage in ('hold_mainhand', 'swing'):
-                tracks = clips()[stage + '$minecraft:mace']['bones']
+            merged = clips()
+            for action in ('hold_mainhand$minecraft:mace', 'swing$minecraft:mace',
+                           'hold_mainhand:lance', 'swing:lance', 'use_mainhand:lance'):
+                tracks = merged[action]['bones']
                 self.assertEqual(tracks['RightArm'], tracks['RightArm3'])
                 self.assertEqual(tracks['RightHandLocator'], tracks['RightHandLocator3'])
                 self.assertNotIn('RightArm4', tracks)

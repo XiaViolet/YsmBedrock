@@ -134,7 +134,7 @@ void snapshot(fs::path const& source, fs::path const& destination) {
 }
 
 struct RoomAssets::Impl {
-    struct Transfer { RelayAsset asset; fs::path path; std::uint64_t written{}; };
+    struct Transfer { RelayAsset asset; fs::path path; std::uint64_t written{}; bool paused{}; };
     struct Verified { RelayAsset asset; fs::file_time_type modified, used; };
     struct Verification { fs::path destination; std::uint64_t size; std::weak_ptr<PendingPublication> job; };
     fs::path root, stage;
@@ -198,7 +198,7 @@ struct RoomAssets::Impl {
         // Count each final path once across receive, verification and atomic replacement.
         // Other admissions must still allow for the old file in case the repair fails.
         std::map<fs::path, std::uint64_t> reserved;
-        for (auto const& [digest, transfer] : transfers) reserved[path(transfer.asset)] = transfer.asset.size;
+        for (auto const& [digest, transfer] : transfers) reserved[path(transfer.asset)] = transfer.paused ? transfer.written : transfer.asset.size;
         for (auto const& entry : verifications) {
             if (!entry.job.expired()) reserved[entry.destination] = entry.size;
         }
@@ -321,7 +321,8 @@ void RoomAssets::append(RelayAsset const& asset, std::uint64_t offset, std::span
     if (it == impl->transfers.end()) {
         impl->forgetFinishedVerifications();
         auto destination = impl->path(asset);
-        require(!offset && impl->transfers.size() + impl->verifications.size() < 4
+        auto active=std::count_if(impl->transfers.begin(),impl->transfers.end(),[](auto const& t){return !t.second.paused;});
+        require(!offset && active + impl->verifications.size() < 4 && impl->transfers.size()<8
             && std::ranges::none_of(impl->verifications, [&](auto const& job) { return job.destination == destination; })
             && impl->reserve(asset.size, destination),
             "Room cache full or unexpected chunk offset");
@@ -330,11 +331,23 @@ void RoomAssets::append(RelayAsset const& asset, std::uint64_t offset, std::span
     }
     auto& tx = it->second;
     require(sameFile(asset, tx.asset) && offset == tx.written, "Room model metadata or chunk order changed");
+    if(tx.paused){
+        require(impl->reserve(asset.size,impl->path(asset)) && regular(tx.path) && fs::file_size(tx.path)==offset,
+            "Cannot resume staged room model");
+        tx.paused=false;
+    }
     std::ofstream output(tx.path, std::ios::binary | (offset ? std::ios::app : std::ios::trunc));
     output.write(reinterpret_cast<char const*>(bytes.data()), bytes.size());
     output.close();
     if (!output) { cancel(asset); throw std::runtime_error("Cannot write room model chunk"); }
     tx.written += bytes.size();
+}
+void RoomAssets::pause(RelayAsset const& asset) {
+    auto it=impl->transfers.find(asset.digest);
+    if(it!=impl->transfers.end() && sameFile(asset,it->second.asset))it->second.paused=true;
+}
+bool RoomAssets::reserveTransfer(RelayAsset const& asset) {
+    return valid(asset) && impl->reserve(asset.size,impl->path(asset));
 }
 void RoomAssets::cancel(RelayAsset const& asset) {
     auto it = impl->transfers.find(asset.digest);

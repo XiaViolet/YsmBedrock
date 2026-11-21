@@ -7,11 +7,9 @@ import tempfile
 import unittest
 import zipfile
 
-PROJECT = pathlib.Path(__file__).resolve().parents[1]
+from inspector import EXE, PROJECT
+
 WORKSPACE = PROJECT.parents[1]
-EXE = PROJECT / 'build/windows/x64/release/ysm-inspect.exe'
-if not EXE.exists():
-    EXE = PROJECT.parent / 'ysm-inspect.exe'
 sample_file = os.environ.get('YSM_TEST_MODEL')
 SAMPLE = pathlib.Path(sample_file) if sample_file else next((WORKSPACE / '素材/原始包').glob('*上杉绘梨衣*.zip'), None)
 if SAMPLE is None:

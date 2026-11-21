@@ -109,6 +109,9 @@ struct TargetPlayback {
     bool visualMaterials;
     std::unordered_map<SkinnedMesh const*, std::weak_ptr<SkinnedMesh>> meshes;
     std::uint64_t meshDraws = 0, visualDraws = 0, meshMisses = 0;
+    std::uint64_t passengerDraws = 0;
+    int lastPassengerSeat = -1;
+    std::array<float, 3> lastPassengerOffset{};
     TargetPlayback(ModelPack const& pack, ReplacedModelTarget const& target, ClientGeometry built)
         : geometry(std::move(built)), sampler(pack.targetAnimations(target), target.geometry),
           controllers(target.controllers, ControllerPolicy::SourcePackage), kind(target.kind),
@@ -331,6 +334,8 @@ struct NativeReplacedResources::Impl {
         std::weak_ptr<ActorResourceDefinition> source;
         NativeModelInstance instance;
         std::shared_ptr<ActorRenderer> renderer;
+        std::weak_ptr<ActorRenderDispatcher> dispatcher;
+        std::optional<HashedString> previousRendererId;
         std::shared_ptr<NativeTextureUpload> texture;
         std::unique_ptr<NativeRenderBindings> bindings;
         std::shared_ptr<TargetPlayback> playback;
@@ -365,7 +370,22 @@ struct NativeReplacedResources::Impl {
     void retireRender(std::pair<Actor const*, std::int64_t> const& key) {
         auto found = renders.find(key);
         if (found == renders.end()) return;
-        auto model = found->second.instance.model.get();
+        auto& entry = found->second;
+        auto model = entry.instance.model.get();
+        if (entry.previousRendererId) {
+            auto const& id = *model->mName;
+            if (auto ref = actorRefs.find(key); ref != actorRefs.end()) {
+                auto context = ref->second.lock();
+                auto actor = context.tryUnwrap<Actor>();
+                if (actor && &*actor == key.first && actor->getActorRendererId() == id)
+                    actor->setActorRendererId(*entry.previousRendererId);
+            }
+            if (auto dispatcher = entry.dispatcher.lock()) {
+                auto& registry = *dispatcher->mDataDrivenRenderers;
+                auto slot = registry.find(id);
+                if (slot != registry.end() && slot->second == entry.renderer) registry.erase(slot);
+            }
+        }
         for (auto const& [controller, condition] : *model->mRenderControllers)
             rendererPlaybacks.erase(controller.get());
         framesInspected.erase(model);
@@ -587,6 +607,7 @@ void NativeReplacedResources::reset() {
     std::scoped_lock lock(mutex);
     if (impl->authority)
         for (auto const& [key, record] : storage->records) storage->toPublish.insert(key);
+    while (!impl->renders.empty()) impl->retireRender(impl->renders.begin()->first);
     impl = std::make_unique<Impl>();
 }
 static auto assignedTarget(Actor const& actor, ReplacedModelAssignments const& assignments)
@@ -608,6 +629,39 @@ bool NativeReplacedResources::hasActiveTarget(Actor const& actor) const {
     std::scoped_lock lock(mutex);
     auto* target = assignedTarget(actor, impl->assignments).second;
     return target && (target->kind == ReplacedModelKind::Vehicle ? showVehicles : showProjectiles);
+}
+std::optional<glm::mat4> NativeReplacedResources::passengerTransform(
+    Actor const& rider, Actor const& vehicle, float alpha, bool customPlayer) const {
+    if (!std::isfinite(alpha)) return {};
+    auto const& passengers = ActorRiding::getPassengers(vehicle.getEntityContext());
+    auto id = rider.getOrCreateUniqueID().rawID;
+    auto occupant = std::find_if(passengers.begin(), passengers.end(), [id](auto const& entry) { return entry.mActorID->rawID == id; });
+    if (occupant == passengers.end()) return {};
+    auto seat = static_cast<int>(std::distance(passengers.begin(), occupant));
+    std::scoped_lock lock(mutex);
+    if (!showVehicles) return {};
+    auto key = std::pair<Actor const*, std::int64_t>{&vehicle, vehicle.getOrCreateUniqueID().rawID};
+    auto found = impl->renders.find(key);
+    if (found == impl->renders.end()) return {};
+    auto const& entry = found->second;
+    auto [assignment, target] = assignedTarget(vehicle, impl->assignments);
+    if (!target || target->kind != ReplacedModelKind::Vehicle || !entry.instance.model
+        || entry.targetIdentity != assignment->pack->localContentKey + "/" + target->id) return {};
+    std::scoped_lock poseLock(entry.playback->mutex);
+    auto const& ctx = entry.playback->evaluation.expressions;
+    if (!entry.playback->meshDraws) return {};
+    alpha = std::clamp(alpha, 0.0f, 1.0f);
+    auto feet = [alpha](Actor const& a) {
+        auto p = a.getInterpolatedPosition(alpha);
+        return glm::vec3(p.x, p.y + a.getFeetPos().y - a.getPosition().y, p.z);
+    };
+    auto matrix = passengerLocator(ctx, seat, vehicle.getInterpolatedBodyYaw(alpha), feet(vehicle) - feet(rider), customPlayer);
+    if (!matrix) return {};
+    ++entry.playback->passengerDraws;
+    entry.playback->lastPassengerSeat = seat;
+    auto translation = (*matrix)[3];
+    entry.playback->lastPassengerOffset = {translation.x, translation.y, translation.z};
+    return matrix;
 }
 void NativeReplacedResources::observeRenderRoute(Actor const& actor, bool enabled) {
     auto const& id = actor.getActorIdentifier().mCanonicalName->getString();
@@ -671,7 +725,16 @@ void NativeReplacedResources::observeRenderRoute(Actor const& actor, bool enable
     }
 }
 void NativeReplacedResources::presentation(bool vehicles, bool projectiles) {
-    std::scoped_lock lock(mutex); showVehicles = vehicles; showProjectiles = projectiles;
+    std::scoped_lock lock(mutex);
+    if ((showVehicles && !vehicles) || (showProjectiles && !projectiles)) {
+        for (auto it = impl->renders.begin(); it != impl->renders.end();) {
+            auto current = it++;
+            bool vehicle = current->second.playback->kind == ReplacedModelKind::Vehicle;
+            if (!(vehicle ? vehicles : projectiles)) impl->retireRender(current->first);
+        }
+    }
+    showVehicles = vehicles;
+    showProjectiles = projectiles;
 }
 void NativeReplacedResources::updateOwner(std::int64_t owner, ModelPack const& pack, RoamingPayload const& roaming) {
     std::scoped_lock lock(mutex);
@@ -794,6 +857,9 @@ Json NativeReplacedResources::assignmentReport(bool enabled) const {
             std::scoped_lock playbackLock(playback.mutex);
             route["animation_samples"] = playback.calls;
             route["bones_applied"] = playback.lastApplied;
+            if (playback.kind == ReplacedModelKind::Vehicle)
+                route["passenger_locator"] = {{"draws", playback.passengerDraws}, {"seat", playback.lastPassengerSeat},
+                    {"offset", playback.lastPassengerOffset}};
             auto controllers = playback.controllers.report();
             auto const& coded = controllers.at("coded");
             bool selected = std::any_of(coded.begin(), coded.end(), [](auto const& controller) {
@@ -1025,7 +1091,7 @@ void NativeReplacedResources::rememberPrototype(std::shared_ptr<DataDrivenModel>
 std::shared_ptr<ActorRenderer> NativeReplacedResources::resolveRenderer(Actor& actor,
     std::shared_ptr<ActorRenderer> original, IClientInstance& client,
     std::filesystem::path const& path) {
-    if (!original || !hasActiveTarget(actor)) return original;
+    if (!hasActiveTarget(actor)) return original;
     std::shared_ptr<DataDrivenModel> prototype;
     {
         std::scoped_lock lock(mutex);
@@ -1065,11 +1131,25 @@ std::shared_ptr<ActorRenderer> NativeReplacedResources::resolveRenderer(Actor& a
     if (impl->failed.contains(failureKey)) return original;
     if (entry.renderer) return entry.renderer;
     try {
-        auto renderer = NativeModelFactory::createRenderer(entry.instance, original->mTextureGroup);
+        // The dispatcher can leave the individual renderer empty for batchable mobs.
+        auto textures = original ? std::shared_ptr<mce::TextureGroup>(original->mTextureGroup) : client.getTextureGroup();
+        auto renderer = NativeModelFactory::createRenderer(entry.instance, textures);
         // A queued draw can outlive the cache entry. Keep uploaded texture
         // locations alive until that last renderer reference is released.
         entry.renderer = std::shared_ptr<ActorRenderer>(renderer.get(),
-            [renderer, texture = entry.texture](ActorRenderer*) {});
+            [renderer, texture = entry.texture, definition = entry.instance.definition](ActorRenderer*) {});
+        // The world draw list can resolve the renderer by actor ID after
+        // dispatch. Register the same instance for projectiles and vehicles.
+        if (auto dispatcher = client.getEntityRenderDispatcher()) {
+            auto const& id = *entry.instance.model->mName;
+            auto [slot, installed] = dispatcher->mDataDrivenRenderers->try_emplace(id,
+                std::static_pointer_cast<DataDrivenRenderer>(entry.renderer));
+            if (installed) {
+                entry.previousRendererId = actor.getActorRendererId();
+                entry.dispatcher = dispatcher;
+                actor.setActorRendererId(id);
+            }
+        }
         impl->saveRenderReport(path, {{"entity", actor.getActorIdentifier().mCanonicalName->getString()},
             {"actor_id", key.second}, {"stage", "submitted_independent_renderer"}});
         return entry.renderer;
@@ -1125,7 +1205,9 @@ std::shared_ptr<DataDrivenModel> NativeReplacedResources::resolveModel(Actor& ac
         next.assignment = std::move(assignment);
         next.targetIdentity = identity;
         next.instance = NativeModelFactory::createTarget(*prototype, found->second, bones,
-            "ysm.replaced.probe.actor_" + std::to_string(key.second));
+            "ysm.replaced.probe.actor_" + std::to_string(key.second),
+            // The 2.6.5 vehicle renderer submits geometry directly after yaw.
+            target->kind == ReplacedModelKind::Vehicle ? 1.f : 0.7f);
         auto texture = impl->textures[identity].lock();
         if (!texture) texture = NativeTextureUpload::create(client.getTextureGroup(), target->texture,
             pack.pbrEncoding, contentSha256(std::span(reinterpret_cast<unsigned char const*>(pack.localContentKey.data()),

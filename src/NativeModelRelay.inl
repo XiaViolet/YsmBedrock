@@ -20,9 +20,9 @@ struct RelayRenderPeers {
     }
 
     template<class Visit>
-    void forEachSkin(Visit&& visit) const {
-        if (installing) visit(installing->skin);
-        for (auto const& [actor, peer] : actors) visit(peer->skin);
+    void forEachPeer(Visit&& visit) const {
+        if (installing) visit(*installing);
+        for (auto const& [actor, peer] : actors) visit(*peer);
     }
 };
 

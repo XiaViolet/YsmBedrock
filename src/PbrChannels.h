@@ -3,6 +3,8 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <span>
+#include <stdexcept>
 
 namespace ysm {
 enum class PbrEncoding { OldPbr, LabPbr13 };
@@ -25,5 +27,19 @@ inline PbrTexel convertPbrTexel(unsigned char const* pixel, PbrEncoding encoding
     auto emission = static_cast<std::uint8_t>(a == 255 ? 0 : (a * 255 + 127) / 254);
     auto subsurface = static_cast<std::uint8_t>(metal || b <= 65 ? 0 : ((b - 65) * 255 + 95) / 190);
     return {static_cast<std::uint8_t>(metal ? 255 : 0), emission, roughness, subsurface};
+}
+
+// Returns whether the converted material actually uses the fourth (subsurface) channel.
+inline bool convertPbrImage(std::span<unsigned char const> source, std::span<unsigned char> output,
+    PbrEncoding encoding, PbrLayer layer) {
+    if (source.size() != output.size() || source.size() % 4 != 0)
+        throw std::invalid_argument("PBR image dimensions do not match its pixel buffer");
+    bool subsurface = false;
+    for (std::size_t i = 0; i < source.size(); i += 4) {
+        auto pixel = convertPbrTexel(source.data() + i, encoding, layer);
+        std::copy(pixel.begin(), pixel.end(), output.data() + i);
+        if (layer == PbrLayer::Material && pixel[3]) subsurface = true;
+    }
+    return subsurface;
 }
 }

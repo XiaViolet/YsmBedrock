@@ -1,0 +1,25 @@
+{
+  "name": "魔法酒狐",
+  "filename": "ysm-magical-wine-fox.zip",
+  "sha256": "2521d6552e1318d962ce250cdded5a2f80bcd782a7f4a27ff133ce3a84912c96",
+  "source": "Yes Steve Model 2.6.5, Fabric, Minecraft 1.21.1",
+  "source_directory": "assets/yes_steve_model/builtin/wine_fox/05_magical/",
+  "jar_sha256": "a66b7265a2761d639c48f61a64179206adf5d81c38f360763fc8275a0fec9fa5",
+  "file_count": 24,
+  "license": "CC BY-NC-SA 4.0",
+  "license_url": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+  "asset_project": "https://github.com/TartaricAcid/WineFoxModel",
+  "attribution": [
+    {
+      "name": "星海境",
+      "role": "模型/动画修改"
+    },
+    {
+      "name": "伊蕾娜教代行教皇",
+      "role": "帽子模型"
+    }
+  ],
+  "packaging": "All 24 files are byte-identical to their entries in the release JAR. Only the containing ZIP was created for distribution.",
+  "source_url": "https://modrinth.com/mod/yes-steve-model/version/eGOUtHWJ",
+  "members_sha256": "b23e58466150636a5653a52f3b758815db0baf4d07808161567d7b0c5546725b"
+}

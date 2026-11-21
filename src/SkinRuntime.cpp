@@ -36,12 +36,13 @@ void SkinRuntime::vanillaHands(Player& player, std::function<void()> const& draw
 }
 struct SkinRuntime::TextureBindingState {
     std::string id;
-    std::shared_ptr<BedrockTextureData const> texture;
+    NativeTextureSet textures;
     std::filesystem::path diagnostics;
 };
 struct SkinRuntime::PbrUploads {
     std::weak_ptr<mce::TextureGroup> group;
     std::vector<std::unique_ptr<ResourceLocation>> locations;
+    bool hasSubsurface = false;
     explicit PbrUploads(std::shared_ptr<mce::TextureGroup> const& owner) : group(owner) {}
     ~PbrUploads() {
         if (auto owner = group.lock())
@@ -50,11 +51,10 @@ struct SkinRuntime::PbrUploads {
     std::shared_ptr<BedrockTextureData> upload(mce::TextureGroup& owner, std::string const& path,
         TextureImage const& source, PbrEncoding encoding, PbrLayer layer) {
         mce::Image image(source.width, source.height, 1, mce::ImageFormat::RGBA8Unorm, mce::ImageUsage::Data);
+        image.mAlphaUsage = mce::AlphaUsage::Data;
         image.resizeImageBytesToFitImageDescription();
-        for (size_t i = 0; i < source.rgba.size(); i += 4) {
-            auto pixel = convertPbrTexel(source.rgba.data() + i, encoding, layer);
-            std::memcpy(image.mImageBytes.data() + i, pixel.data(), 4);
-        }
+        auto usedSubsurface = convertPbrImage(source.rgba, {image.mImageBytes.data(), image.mImageBytes.size()}, encoding, layer);
+        if (layer == PbrLayer::Material) hasSubsurface = usedSubsurface;
         auto& location = locations.emplace_back(std::make_unique<ResourceLocation>(Core::PathView(path)));
         auto data = owner.uploadTexture(*location, cg::ImageBuffer(std::move(image))).mBedrockTextureData;
         if (!data || data->mIsMissingTexture != IsMissingTexture::No
@@ -169,6 +169,7 @@ void SkinRuntime::apply(IClientInstance& client, Player& player, ModelPack const
     auto const& variant = pack.currentTexture();
     if (variant.normal) nextSet.normal = nextLayers->upload(*group, basePath + "_n", *variant.normal, pack.pbrEncoding, PbrLayer::Normal);
     if (variant.specular) nextSet.material = nextLayers->upload(*group, basePath + "_mers", *variant.specular, pack.pbrEncoding, PbrLayer::Material);
+    nextSet.hasSubsurfaceChannel = nextLayers->hasSubsurface;
     auto& uploaded = group->uploadTexture(*nextLocation, cg::ImageBuffer(nextImage->clone()));
     auto nextTexture = uploaded.mBedrockTextureData;
     if (!nextTexture || nextTexture->mIsMissingTexture != IsMissingTexture::No
@@ -178,10 +179,10 @@ void SkinRuntime::apply(IClientInstance& client, Player& player, ModelPack const
         group->unloadTexture(*nextLocation, false);
         throw std::runtime_error("Original-resolution texture upload did not complete");
     }
-    nextBinding->texture = nextTexture;
     nextSet.color = nextTexture;
-    uploaded.mBedrockNormalTextureData = nextSet.normal;
-    uploaded.mBedrockMERSTextureData = nextSet.material;
+    nextBinding->textures = nextSet;
+    describePbrLayers(uploaded, nextSet);
+    bindPbrLayers(uploaded, nextSet);
     auto oldActive = active;
     auto oldImage = std::move(renderImage);
     auto oldLocation = std::move(textureLocation);
@@ -231,16 +232,18 @@ void SkinRuntime::apply(IClientInstance& client, Player& player, ModelPack const
     trace["transport_image_width"] = transportImage.mWidth;
     trace["render_image_width"] = renderImage->mWidth;
     trace["texture_name"] = pack.currentTexture().name;
+    trace["texture_set_layers"] = uploadedTexture.color->mTextureSetDescription->mLayerInfo->size();
+    trace["material_layout"] = !uploadedTexture.material ? "none" : uploadedTexture.hasSubsurfaceChannel ? "MERS" : "MER";
     trace["pbr_normal_uploaded"] = static_cast<bool>(uploadedTexture.normal);
     trace["pbr_material_uploaded"] = static_cast<bool>(uploadedTexture.material);
     std::ofstream(diagnostics) << trace.dump(2);
     applied = std::move(next);
 }
 
-void SkinRuntime::updateRenderTexture(IClientInstance& client, ClientSkinInfoData& skin, SerializedSkinRef const& serialized) {
-    if (!active || !renderImage || *serialized.mSkinImpl->mObject.mId != renderId) return;
+bool SkinRuntime::updateRenderTexture(IClientInstance& client, ClientSkinInfoData& skin, SerializedSkinRef const& serialized) {
+    if (!active || !renderImage || *serialized.mSkinImpl->mObject.mId != renderId) return false;
     auto group = client.getTextureGroup();
-    if (!group) return;
+    if (!group) return false;
     if (!textureLocation) textureLocation = std::make_unique<ResourceLocation>(Core::PathView("textures/ysm_bedrock/" + renderId));
     auto& uploaded = group->uploadTexture(*textureLocation, cg::ImageBuffer(renderImage->clone()));
     auto const& data = uploaded.mBedrockTextureData;
@@ -249,17 +252,16 @@ void SkinRuntime::updateRenderTexture(IClientInstance& client, ClientSkinInfoDat
         || data->mTextureDescription->mHeight != renderImage->mHeight
         || (static_cast<unsigned char>(data->mTextureLoadState) & static_cast<unsigned char>(TextureLoadState::LoadedBit)) == 0)
         throw std::runtime_error("Original-resolution texture upload did not complete");
-    uploaded.mBedrockNormalTextureData = uploadedTexture.normal;
-    uploaded.mBedrockMERSTextureData = uploadedTexture.material;
+    describePbrLayers(uploaded, uploadedTexture);
+    bindPbrLayers(uploaded, uploadedTexture);
     auto& target = *skin.mSkinTexture;
     target.mBedrockTextureData = uploaded.mBedrockTextureData;
-    target.mBedrockMERSTextureData = uploaded.mBedrockMERSTextureData;
-    target.mBedrockNormalTextureData = uploaded.mBedrockNormalTextureData;
+    bindPbrLayers(target, uploadedTexture);
     textureGroup = group;
     uploadedTexture.color = data;
     auto binding = std::make_shared<TextureBindingState>();
     binding->id = renderId;
-    binding->texture = data;
+    binding->textures = uploadedTexture;
     binding->diagnostics = ll::mod::NativeMod::current()->getModDir() / "early-texture-bindings.json";
     textureBinding.store(std::move(binding), std::memory_order_release);
     std::ofstream(ll::mod::NativeMod::current()->getModDir() / "texture-status.json") << Json{
@@ -267,6 +269,7 @@ void SkinRuntime::updateRenderTexture(IClientInstance& client, ClientSkinInfoDat
         {"load_state", static_cast<unsigned char>(data->mTextureLoadState)},
         {"missing", data->mIsMissingTexture != IsMissingTexture::No},
         {"serialized_skin_valid", serialized.isValid()}, {"render_id", renderId}}.dump(2);
+    return true;
 }
 
 void SkinRuntime::restore(IClientInstance& client, Player& player) {
@@ -275,6 +278,10 @@ void SkinRuntime::restore(IClientInstance& client, Player& player) {
         ClientSkinSystem::applySkinToPlayer(client, player, *original);
     }
     reset();
+}
+NativeTextureSet SkinRuntime::publishedTextures() const {
+    auto state = textureBinding.load(std::memory_order_acquire);
+    return state ? state->textures : NativeTextureSet{};
 }
 void SkinRuntime::bindResourceTexture(SerializedSkinRef const& skin, std::shared_ptr<ActorResourceDefinition> const& definition) {
     auto binding = textureBinding.load(std::memory_order_acquire);
@@ -289,7 +296,7 @@ void SkinRuntime::bindResourceTexture(SerializedSkinRef const& skin, std::shared
     definition->mHideArmor = true;
     auto& target = found->second.mTexturePtrs->mColorTexture->mClientTexture;
     auto before = target ? target->mTextureDescription->mWidth : 0;
-    target = binding->texture;
+    target = binding->textures.color;
     std::ofstream(binding->diagnostics) << Json{
         {"previous_width", before}, {"width", target->mTextureDescription->mWidth},
         {"height", target->mTextureDescription->mHeight}, {"own_geometry", ownGeometry},

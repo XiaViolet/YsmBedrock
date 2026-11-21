@@ -17,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <fstream>
+#include <format>
 #include <future>
 #include <utility>
 
@@ -33,6 +34,7 @@ struct InstalledPeer {
     std::shared_ptr<ModelPack const> model;
     std::uint64_t actionSerial{}, eventCursor{}, lastSerial{};
     bool worldPoseReported = false;
+    std::atomic_bool textureChanged{};
 };
 struct Candidate {
     std::shared_ptr<ModelPack const> model;
@@ -59,6 +61,19 @@ ModelPack loadRoomFile(std::filesystem::path const& path, RelayAsset const& asse
     if(pack.localContentKey!=asset.contentKey || pack.binaryOriginVersion()!=asset.originVersion
         || pack.descriptor.at("spec")!=asset.sourceSpec)throw std::runtime_error("Room cache identity or model format changed");
     return pack;
+}
+std::string stageLabel(std::string const& stage) {
+    static std::map<std::string,std::string> const labels{
+        {"waiting","等待下载"},{"awaiting_host","等房主收取"},{"downloading","下载中"},{"paused","下载已暂停"},
+        {"verifying","校验中"},{"cached","等待准备模型"},{"preparing","正在准备模型"},{"awaiting_actor","等待角色出现"},
+        {"awaiting_draw","等待角色绘制"},{"displayed","已显示"},{"vanilla","本机显示原版"},{"failed","失败"},
+        {"failed_download","下载或校验失败"},{"failed_prepare","准备模型失败"},{"failed_draw","绘制绑定失败"},
+        {"denied","房主已拒绝"},{"conflicting_archive","同一模型标识的文件不一致"},{"unreported","尚未回报"},{"unsupported","此版本不支持回报"},
+        {"failed: provider timed out","下载超时"},{"failed: upstream failed","房主收取失败"},
+        {"failed: file verification or storage failed","校验或写入缓存失败"},{"failed: source unavailable","模型来源不可用"},
+        {"failed: host is not acquiring this file","房主接收超时"},{"failed: invalid local cache","本机缓存读取失败"},
+        {"failed: invalid chunk length","收到的分块长度错误"},{"failed: denied","来源已拒绝传输"}};
+    auto it=labels.find(stage);return it==labels.end()?stage:it->second;
 }
 
 }
@@ -97,7 +112,7 @@ struct NativeModelRelay::Impl {
     RelayFrame latest;
     Clock::time_point lastReply{}, nextPoll{};
     RelayPreparationQueue queue;
-    struct PreparationFailure {std::string stream,digest,reason;std::int64_t actor{};unsigned count{};};
+    struct PreparationFailure {std::string stream,digest,reason;std::int64_t actor{};unsigned count{};bool drawing{};};
     std::map<std::string,PreparationFailure> failures;
     std::string error;
     bool endpointsConfirmed = false;
@@ -131,6 +146,23 @@ struct NativeModelRelay::Impl {
     std::set<std::string> hiddenPlayers;
 
     bool hides(std::string const& id) const { return hideOthers || hiddenPlayers.contains(id); }
+    std::string stage(RelayPose const& pose,Player* actor) const {
+        auto const& id=pose.xuid;
+        if(hides(id))return "vanilla";
+        auto bound=peers.find(id);
+        if(actor && bound!=peers.end() && bound->second->session==pose.session && bound->second->actor==actor
+            && bound->second->actorId==actor->getOrCreateUniqueID().rawID)
+            return bound->second->worldPoseReported?"displayed":"awaiting_draw";
+        if(preparation.valid() && preparing.xuid==id && preparing.session==pose.session && preparingSession==session)return "preparing";
+        auto failed=failures.find(id);
+        if(failed!=failures.end() && failed->second.stream==pose.session)return failed->second.drawing?"failed_draw":"failed_prepare";
+        if(view){
+            if(view->ready.contains(pose.contentKey))return actor?"cached":"awaiting_actor";
+            auto state=view->states.find(pose.contentKey);
+            if(state!=view->states.end() && !state->second.empty())return state->second;
+        }
+        return "waiting";
+    }
 
     void publishPeers(std::shared_ptr<InstalledPeer> installing = {}) {
         drawing.store(std::make_shared<DrawPeers>(peers, std::move(installing)), std::memory_order_release);
@@ -200,15 +232,38 @@ void NativeModelRelay::configure(std::filesystem::path directory) {
     impl->status();
 }
 void NativeModelRelay::serverTick(Level& level){impl->room.serverTick(level);}
-void NativeModelRelay::roomCommand(std::string command){impl->room.command(std::move(command));}
+void NativeModelRelay::roomCommand(std::string command){
+    if(command.starts_with("retry:")){
+        if(command.size()<=39 || command[38]!='|')return;
+        auto id=command.substr(39);
+        auto wearer=impl->latest.players.find(id);
+        if(!impl->native || wearer==impl->latest.players.end() || wearer->second.session!=command.substr(6,32) || impl->hides(id))return;
+        impl->failures.erase(id);impl->queue.retry(id);
+    }
+    impl->room.command(std::move(command));
+}
 Json NativeModelRelay::roomInfo() const {
     auto view=impl->view;
     Json offers=Json::array();
     if(view)for(auto const& o:view->offers)offers.push_back({{"key",o.peer+"|"+o.asset.contentKey},{"title",o.asset.title}});
     Json denied=Json::array();
     if(view && impl->room.host())for(auto const& [key,title]:view->deniedModels)
-        denied.push_back({{"key",key},{"title",title}});
-    return {{"host",impl->room.host()},{"active",view && view->connected},{"auto_receive",!view || view->autoReceive},{"message",view?view->message:impl->error},{"offers",std::move(offers)},{"denied",std::move(denied)}};
+        denied.push_back({{"key",key},{"title",title},{"temporary",view->sessionDenied.contains(key)}});
+    Json observations=Json::array();
+    if(view && impl->room.host() && impl->level){
+        std::map<std::string,std::string> names;
+        auto name=[&](std::string const& id){
+            if(id==impl->localXuid)return std::string("房主");
+            auto [it,fresh]=names.try_emplace(id,id);
+            if(fresh)if(auto* actor=roomActor(*impl->level,id))it->second=actor->getNameTag();
+            return it->second;
+        };
+        for(auto const& [observer,subjects]:view->observers)for(auto const& [subject,report]:subjects)
+            observations.push_back(name(observer)+" 看 "+name(subject)+" · "+stageLabel(report.stage));
+    }
+    return {{"host",impl->room.host()},{"active",view && view->connected},{"auto_receive",!view || view->autoReceive},
+        {"upload_retry",view?view->uploadRetryTarget:std::string{}},{"upload_bps",view?view->uploadRate:0},{"download_bps",view?view->downloadRate:0},{"rate_limit",view?view->rateLimit:0},
+        {"message",view?view->message:impl->error},{"offers",std::move(offers)},{"denied",std::move(denied)},{"observations",std::move(observations)}};
 }
 void NativeModelRelay::boundary() {
     impl->left=true;impl->trackVisibility=false;
@@ -263,25 +318,39 @@ void NativeModelRelay::setVisibility(bool hideOthers, Json const& hiddenPlayers)
 Json NativeModelRelay::playerRows(Player const* local) const {
     auto rows = Json::array();
     if (!local || &local->getLevel() != impl->level) return rows;
-    auto add=[&](std::string const& id,std::string const& state,std::string const& key){
-        static const std::map<std::string,std::string> labels{{"waiting","等待下载"},{"downloading","下载中"},{"verifying","校验中"},
-            {"cached","等待绘制准备"},{"denied","房主已拒绝"},{"conflicting_archive","同一模型标识的文件不一致"}};
-        auto label=labels.find(state);
-        if(auto* player=roomActor(local->getLevel(),id))
-            rows.push_back({{"id",id},{"name",player->getNameTag()},{"hidden",impl->hiddenPlayers.contains(id)},{"state",label!=labels.end()?label->second:state},{"key",key}});
+    auto roomRate=[&](std::string const& id){
+        if(!impl->view)return std::string{};
+        auto found=impl->view->peerRates.find(id);
+        if(found==impl->view->peerRates.end())return std::string{};
+        return std::format("上传 {:.0f} · 下载 {:.0f} KiB/s",found->second.upload/1024.,found->second.download/1024.);
     };
     for(auto const& [id,pose]:impl->latest.players){
-        std::string state="等待模型";
-        if(impl->hides(id))state="已屏蔽";
-        else if(auto it=impl->peers.find(id);it!=impl->peers.end())state=it->second->worldPoseReported?"已显示":"等待角色绘制";
-        else if(impl->preparation.valid() && impl->preparing.xuid==id)state="正在准备模型";
-        else if(auto failed=impl->failures.find(id);failed!=impl->failures.end() && failed->second.stream==pose.session)
-            state="准备失败 · "+failed->second.reason;
-        else if(impl->view && impl->view->states.contains(pose.contentKey))state=impl->view->states.at(pose.contentKey);
-        add(id,state,pose.contentKey);
+        auto* actor=roomActor(local->getLevel(),id);
+        auto stage=impl->stage(pose,actor),label=stageLabel(stage);
+        if(stage=="failed_prepare" || stage=="failed_draw")label+=" · "+impl->failures.at(id).reason;
+        if(impl->view && (stage=="downloading" || stage=="awaiting_host" || stage=="paused")){
+            auto p=impl->view->progress.find(pose.contentKey);
+            if(p!=impl->view->progress.end()){
+                auto bytes=stage=="awaiting_host"?p->second.upstream:p->second.received;
+                auto rate=stage=="awaiting_host"?p->second.upstreamBytesPerSecond:p->second.bytesPerSecond;
+                label+=std::format(" · {:.0f} KiB/s · {:.0f}/{:.0f} KiB",rate/1024.,bytes/1024.,p->second.total/1024.);
+            }
+        }
+        rows.push_back({{"id",id},{"name",actor?actor->getNameTag():id},{"rates",roomRate(id)},{"hidden",impl->hiddenPlayers.contains(id)},
+            {"state",label},{"key",pose.contentKey},{"stream",pose.session},{"retry",impl->native && (stage=="waiting" || stage=="downloading"
+                || stage=="paused" || stage=="awaiting_host" || stage.starts_with("failed"))}});
     }
     if(impl->view)for(auto const& [id,state]:impl->view->peerStates)
-        if(!impl->latest.players.contains(id))add(id,state,"");
+        if(!impl->latest.players.contains(id)){
+            auto* actor=roomActor(local->getLevel(),id);
+            rows.push_back({{"id",id},{"name",actor?actor->getNameTag():id},{"hidden",impl->hiddenPlayers.contains(id)},{"state",stageLabel(state)},{"key",""}});
+        }
+    if(impl->view)for(auto const& [id,rate]:impl->view->peerRates){
+        if(id==impl->localXuid || impl->latest.players.contains(id) || impl->view->peerStates.contains(id))continue;
+        auto* actor=roomActor(local->getLevel(),id);
+        if(actor && actor!=local)rows.push_back({{"id",id},{"name",actor->getNameTag()},{"hidden",impl->hiddenPlayers.contains(id)},
+            {"rates",roomRate(id)},{"state","正在传输房间模型"},{"key",""}});
+    }
     return rows;
 }
 void NativeModelRelay::tick(IClientInstance& client, Player* player, ModelPack const* model, AnimationRuntime& local, NativeReplacedResources const& resources) {
@@ -357,7 +426,7 @@ void NativeModelRelay::tick(IClientInstance& client, Player* player, ModelPack c
             data.outgoingEvents.clear();
         } else if(now>=data.nextPoll && !data.room.backpressured()){
             std::erase_if(data.outgoingEvents,[&](auto const& event){return event.sequence<=data.latest.acknowledgedEvent;});
-            auto pose=model?local.outgoingPose(data.eventSequence,data.outgoingEvents.empty()):RelayPose{};
+            auto pose=model?local.outgoingPose(*player,data.eventSequence,data.outgoingEvents.empty()):RelayPose{};
             if(model)pose.shoulderBirds=observeShoulderPassengers(*player,resources);
             if(pose.texture!=data.selectionTexture){
                 data.outgoingEvents.clear();data.selectionTexture=pose.texture;
@@ -366,13 +435,20 @@ void NativeModelRelay::tick(IClientInstance& client, Player* player, ModelPack c
             pose.events=data.outgoingEvents;
             pose.xuid=data.localXuid;pose.serial=++data.serial;pose.contentKey=key;
             std::set<std::string> visible;
-            for(auto const& [id,state]:data.latest.players)
-                if(auto* remote=roomActor(player->getLevel(),id);remote && !data.hides(id) && data.recentlyDrawn(*remote,now))visible.insert(id);
-            data.room.update(model?model->librarySource:std::string{},model?model->id:std::string{},std::move(pose),std::move(visible));
+            RoomDisplays displays;
+            for(auto const& [id,state]:data.latest.players){
+                auto* remote=roomActor(player->getLevel(),id);
+                if(remote && !data.hides(id) && data.recentlyDrawn(*remote,now))visible.insert(id);
+                if(!data.room.host()){
+                    auto stage=data.stage(state,remote);
+                    displays[id]={state.session,stage.starts_with("failed:")?"failed_download":std::move(stage)};
+                }
+            }
+            data.room.update(model?model->librarySource:std::string{},model?model->id:std::string{},std::move(pose),std::move(visible),std::move(displays));
             data.nextPoll=now+std::chrono::milliseconds(100);
         }
     }else if (!data.exchange.valid() && now >= data.nextPoll) {
-        auto wire = model ? local.outgoingPose(data.eventSequence, data.outgoingEvents.empty()) : RelayPose{};
+        auto wire = model ? local.outgoingPose(*player,data.eventSequence, data.outgoingEvents.empty()) : RelayPose{};
         if (model) wire.shoulderBirds = observeShoulderPassengers(*player, resources);
         wire.xuid = data.localXuid;
         wire.session = data.session;
@@ -437,6 +513,7 @@ void NativeModelRelay::tick(IClientInstance& client, Player* player, ModelPack c
         }
     }
     if (data.preparation.valid() && data.preparation.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        bool binding=false;
         try {
             auto candidate = data.preparation.get();
             auto const& pending = data.preparing;
@@ -462,6 +539,7 @@ void NativeModelRelay::tick(IClientInstance& client, Player* player, ModelPack c
                 if(data.native && !current.events.empty())entry->eventCursor=std::max(entry->eventCursor,current.events.back().sequence);
                 data.publishPeers(entry);
                 try {
+                    binding=true;
                     entry->animation.attach(*actor);
                     entry->animation.applyPeerPose(current, entry->eventCursor, true, *actor);
                     entry->skin.apply(client, *actor, *candidate.model, entry->xuid, entry->animation.skinGeometry());
@@ -487,7 +565,7 @@ void NativeModelRelay::tick(IClientInstance& client, Player* player, ModelPack c
                     auto& failure=data.failures[data.preparing.xuid];
                     if(failure.stream!=data.preparing.session || failure.digest!=data.preparingDigest || failure.actor!=data.preparingActor)
                         failure={data.preparing.session,data.preparingDigest,{},data.preparingActor,0};
-                    ++failure.count;failure.reason=error.what();
+                    ++failure.count;failure.reason=error.what();failure.drawing=binding;
                 }
                 data.queue.failed(data.preparing, now);
                 data.error = error.what();
@@ -575,6 +653,7 @@ void NativeModelRelay::updateEntityOwners(NativeReplacedResources& resources, Pl
         auto* player = roomActor(local.getLevel(), id);
         auto state = impl->latest.players.find(id);
         if (!player || player != peer->actor || state == impl->latest.players.end()) continue;
+        peer->animation.trackSeats(resources.weak_from_this());
         NativeReplacedResources::PeerOwner owner{player->getOrCreateUniqueID().rawID, peer->model, state->second.roaming, {}};
         if (auto* vehicle = player->getVehicle())
             if (auto* first = vehicle->getFirstPassenger())
@@ -591,19 +670,26 @@ void NativeModelRelay::prepareForRender(ActorRenderData const& render, Animation
             std::erase_if(impl->lastSeen,[now=Clock::now()](auto const& item){return now-item.second>std::chrono::seconds(2);});
         if(impl->lastSeen.size()<512 || impl->lastSeen.contains(id))impl->lastSeen[id]=Clock::now();
     }
-    if (auto peer = impl->peer(render.mActor); peer && peer->skin.isActive())
+    if (auto peer = impl->peer(render.mActor); peer && peer->skin.isActive()) {
+        if (peer->textureChanged.exchange(false))
+            peer->animation.setRenderTexture(peer->skin.publishedTextures(), peer->skin.textureName());
         peer->animation.prepareForRender(*peer->actor, component);
+    }
 }
 void NativeModelRelay::prepareGeometry(RenderController& controller, std::shared_ptr<DataDrivenGeometry> const& geometry, RenderParams& params) {
     if (auto peer = impl->peer(params.mActor)) peer->animation.prepareGeometry(controller, geometry, params);
 }
 void NativeModelRelay::updateTexture(IClientInstance& client, ClientSkinInfoData& skin, SerializedSkinRef const& serialized) {
     auto peers = impl->drawing.load(std::memory_order_acquire);
-    if (peers) peers->forEachSkin([&](SkinRuntime& target) { target.updateRenderTexture(client, skin, serialized); });
+    if (peers) peers->forEachPeer([&](InstalledPeer& target) {
+        // A skin callback may run inside a render operation. Let the next
+        // actor preparation adopt the publication before evaluating its pose.
+        if (target.skin.updateRenderTexture(client, skin, serialized)) target.textureChanged.store(true);
+    });
 }
 void NativeModelRelay::bindTexture(SerializedSkinRef const& serialized, std::shared_ptr<ActorResourceDefinition> const& resource) {
     auto peers = impl->drawing.load(std::memory_order_acquire);
-    if (peers) peers->forEachSkin([&](SkinRuntime& target) { target.bindResourceTexture(serialized, resource); });
+    if (peers) peers->forEachPeer([&](InstalledPeer& target) { target.skin.bindResourceTexture(serialized, resource); });
 }
 bool NativeModelRelay::needsSurfaces(Actor const& actor) const {
     auto peer = impl->peer(&actor);
@@ -633,7 +719,11 @@ bool NativeModelRelay::suppressGlide(Actor const& actor, bool firstPerson, std::
     return peer && peer->animation.suppressNativeGlideRotation(actor, firstPerson, rotation);
 }
 std::span<BoneVisual const> NativeModelRelay::visuals(SkinnedMesh const& mesh, RenderController const* controller,
-    std::span<BoneVisual> scratch, std::vector<BoneVisual>& overflow) {
+    std::span<BoneVisual> scratch, std::vector<BoneVisual>& overflow, Actor const* owner) {
+    if (owner) {
+        auto peer = impl->peer(owner);
+        return peer ? peer->animation.boneVisuals(mesh, controller, scratch, overflow, owner) : std::span<BoneVisual const>{};
+    }
     auto peers = impl->drawing.load(std::memory_order_acquire);
     if (peers) for (auto const& [actor, peer] : peers->actors) {
         auto result = peer->animation.boneVisuals(mesh, controller, scratch, overflow);

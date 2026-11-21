@@ -254,7 +254,7 @@ public:
             extra->mNormalTextureDataWeakPtr = textures.normal;
             extra->mMERSTextureDataWeakPtr = textures.material;
             extra->mNormalTextureMode = NormalTextureMode::NormalMap;
-            extra->mMERSTextureMode = MERSTextureMode::Mers;
+            extra->mMERSTextureMode = textures.hasSubsurfaceChannel ? MERSTextureMode::Mers : MERSTextureMode::Mer;
             target.mPBRData = std::move(extra);
         }
     }
@@ -305,6 +305,27 @@ struct NativeRenderBindings::Impl {
     std::vector<VisibilityBinding> visibility;
     std::vector<VisibilityBinding> deferredVisibility;
     Json originalTextureSizes = Json::array();
+    NativeTextureSet boundTextures;
+    void restoreTextureBindings() {
+        for (auto& binding : textures) if (auto controller = binding.controller.lock()) {
+            if (binding.index >= controller->mTextures->size()) continue;
+            auto& expression = (*controller->mTextures)[binding.index];
+            auto current = std::get_if<std::unique_ptr<Molang::details::IComplexExpression>>(&*expression.mImpl);
+            if (current && current->get() == binding.replacement) *expression.mImpl = std::move(*binding.original->mImpl);
+        }
+        for (auto& binding : resources) if (auto definition = binding.definition.lock()) {
+            auto found = definition->mTextureMap->find("default");
+            if (found != definition->mTextureMap->end()) {
+                auto& texture = found->second.mTexturePtrs->mColorTexture->mClientTexture;
+                if (texture == binding.replacement) texture = binding.original;
+            }
+        }
+        textures.clear();
+        resources.clear();
+        models.clear();
+        originalTextureSizes.clear();
+        boundTextures = {};
+    }
     void restoreDeferredVisibility(RenderController const* controller = nullptr, DataDrivenGeometry const* selected = nullptr) {
         std::erase_if(deferredVisibility, [&](auto& binding) {
             auto geometry = binding.geometry.lock();
@@ -387,6 +408,11 @@ bool NativeRenderBindings::bind(RenderParams& params, NativeTextureSet const& te
     if (std::none_of(impl->armorPolicies.begin(), impl->armorPolicies.end(), [&](auto const& binding) { return binding.model.lock() == model; }))
         impl->armorPolicies.push_back({model, static_cast<bool>(model->mHideArmor)});
     model->mHideArmor = true;
+    // Skin refreshes can replace GPU resources while Bedrock retains the model.
+    if (textures != impl->boundTextures) {
+        impl->restoreTextureBindings();
+        impl->boundTextures = textures;
+    }
     bool prepared = std::any_of(impl->models.begin(), impl->models.end(), [&](auto const& weak) { return weak.lock() == model; });
     std::shared_ptr<BedrockTextureData const> previousDefault;
     if (!prepared && texture) if (auto definition = model->mResourceDefinition.lock()) {
@@ -421,7 +447,8 @@ bool NativeRenderBindings::bind(RenderParams& params, NativeTextureSet const& te
         }
         if (controller->mName->getString().find(".first_person") == std::string::npos || armParts.empty()) continue;
         prepareParts(*controller, armParts);
-        impl->parts.push_back(controller);
+        if (std::none_of(impl->parts.begin(), impl->parts.end(), [&](auto const& part) { return part.lock() == controller; }))
+            impl->parts.push_back(controller);
     }
     if (!prepared && texture) impl->models.push_back(model);
     return firstPersonDepth != 0;
@@ -538,7 +565,8 @@ Json NativeRenderBindings::report(RenderParams& params) const {
                         return nullptr;
                     };
                     result["controller_pbr"][controller->mName->getString()].push_back({
-                        {"normal", dimensions(extra->mNormalTextureDataWeakPtr)}, {"mers", dimensions(extra->mMERSTextureDataWeakPtr)}});
+                        {"normal", dimensions(extra->mNormalTextureDataWeakPtr)}, {"mers", dimensions(extra->mMERSTextureDataWeakPtr)},
+                        {"material_layout", extra->mMERSTextureMode == MERSTextureMode::Mers ? "MERS" : "MER"}});
                 }
             }
             result["controller_textures"][controller->mName->getString()] = textures;
@@ -562,19 +590,7 @@ void NativeRenderBindings::reset() {
             part.mVisible = binding.visible;
         }
     }
-    for (auto& binding : impl->textures) if (auto controller = binding.controller.lock()) {
-        if (binding.index >= controller->mTextures->size()) continue;
-        auto& expression = (*controller->mTextures)[binding.index];
-        auto current = std::get_if<std::unique_ptr<Molang::details::IComplexExpression>>(&*expression.mImpl);
-        if (current && current->get() == binding.replacement) *expression.mImpl = std::move(*binding.original->mImpl);
-    }
-    for (auto& binding : impl->resources) if (auto definition = binding.definition.lock()) {
-        auto found = definition->mTextureMap->find("default");
-        if (found != definition->mTextureMap->end()) {
-            auto& texture = found->second.mTexturePtrs->mColorTexture->mClientTexture;
-            if (texture == binding.replacement) texture = binding.original;
-        }
-    }
+    impl->restoreTextureBindings();
     for (auto const& weak : impl->parts) if (auto controller = weak.lock()) {
         auto& entries = *controller->mPartVisibility;
         std::size_t destination = 0;
@@ -588,12 +604,8 @@ void NativeRenderBindings::reset() {
         }
         while (entries.size() > destination) entries.pop_back();
     }
-    impl->textures.clear();
     impl->armorPolicies.clear();
-    impl->resources.clear();
     impl->parts.clear();
-    impl->models.clear();
     impl->visibility.clear();
-    impl->originalTextureSizes.clear();
 }
 }

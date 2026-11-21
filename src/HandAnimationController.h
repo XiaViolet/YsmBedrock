@@ -48,7 +48,7 @@ class HandAnimationController {
     };
     std::set<std::string> clips;
     std::set<std::string> fallbackClips;
-    std::vector<std::string> clipOrder;
+    ConditionalClips conditions;
     std::array<Playback, 2> holds;
     Playback use, swing;
     double lastTime = -1, previousSwingProgress = 0;

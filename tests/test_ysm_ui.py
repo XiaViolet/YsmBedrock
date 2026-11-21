@@ -22,6 +22,19 @@ def run(mode, value):
 
 
 class UiTests(unittest.TestCase):
+    def test_wearer_form_snapshot_restores_face_scalars_without_rerunning_labels(self):
+        forms = [dict(type="radio", value="v.pants_change8", labels={"smile": "v.pants_change8=4;v.t8=6;v.roaming.other=9"}),
+                 dict(type="checkbox", value="v.sld")]
+        description = dict(properties=dict(extra_animation_buttons=[dict(id="face",config_forms=forms)]))
+        owner = run("--ui-bindings",dict(descriptor=description,events=[
+            dict(op="action",route="face/0",label=0),dict(op="action",route="face/1",value=1)]))[-1]
+        self.assertEqual(owner["form_snapshot"],{"variable.pants_change8":4,"variable.t8":6,"variable.sld":1})
+        snapshot = dict(owner["form_snapshot"], **{"variable.unrelated":123,"variable.roaming.other":123})
+        observer = run("--ui-bindings",dict(descriptor=description,events=[dict(form_snapshot=snapshot)]))[0]
+        self.assertEqual(observer["form_snapshot"],owner["form_snapshot"])
+        self.assertEqual(observer["values"],owner["values"])
+        self.assertEqual(observer["roaming"],{})
+
     def session(self, events, **data):
         data.setdefault('source', 'model.zip')
         return run('--ui-session', dict(generation=1, events=events, **data))
@@ -278,6 +291,12 @@ class UiTests(unittest.TestCase):
         frame = self.session(self.click(events, '原生网格预览'))[-1]
         self.assertEqual([(c['kind'], c['key'], c['value']) for c in frame['commands']],
                          [('setting', 'native_menu_preview', 0)])
+
+    def test_arke_extra_layer_is_opt_in_without_wearing_a_model(self):
+        events = self.click([dict(op='open')], '本地设置')
+        frame = self.session(self.click(events, 'Arke 附加发光层'))[-1]
+        self.assertEqual([(c['kind'], c['key'], c['value']) for c in frame['commands']],
+                         [('setting', 'arke_extra_emissive_layer', 1)])
 
     def test_native_menu_mesh_moves_with_the_authored_walk(self):
         options = json.dumps(dict(clip='walk', times=[.12, .45]))

@@ -16,8 +16,13 @@ class ModelUiBindings {
         double min = 0, max = 100, step = 1;
     };
     std::map<std::string, Form> forms;
+    std::set<std::string> formVariables;
 public:
     explicit ModelUiBindings(Json const& descriptor = Json::object());
+    // Only scalar variables explicitly writable by this model's config forms
+    // may be restored by a remote wearer snapshot.
+    std::map<std::string,float> snapshotScalars(MolangContext const&) const;
+    bool applyScalars(MolangContext&, std::map<std::string,float> const& previous, std::map<std::string,float> const& next) const;
     Json observe(MolangContext const& context) const;
     bool act(MolangContext& context, std::string const& route, double value, int label = -1) const;
     std::set<std::string> roamingFields() const;
@@ -78,6 +83,7 @@ private:
     bool searchFocused = false, favoritesOnly = false;
     std::size_t listPage = 0, texturePage = 0, formPage = 0, infoPage = 0, previewPage = 0, radioPage = 0;
     std::size_t playerPage = 0;
+    bool observersOpen = false;
     float mouseX = -1, mouseY = -1;
     PreviewCamera previewCamera;
     UiRect wheelBounds;
@@ -99,6 +105,7 @@ public:
     Page currentPage() const { return page; }
     bool key(int virtualKey, bool down, bool control = false, std::string text = {}, bool shift = false);
     bool mouse(int button, int value, float x, float y);
+    void cancelPointer();
     UiScene draw(float width, float height, float hotbarTop = -1.f);
     std::vector<UiCommand> takeCommands();
     Json report() const;

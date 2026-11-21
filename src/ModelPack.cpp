@@ -250,10 +250,15 @@ public:
     Json json(std::string const& path) {
         auto bytes = read(path);
         if (decodedV3) return Json::from_cbor(bytes);
-        if (roomInput) return Json::parse(bytes.begin(), bytes.end(), [&](int depth, Json::parse_event_t, Json& value) {
-            if (depth > 128 || ++roomJsonNodes > 6000000
-                || (value.is_string() && value.get_ref<std::string const&>().size() > (1u << 20)))
-                throw std::runtime_error("Room model JSON exceeds complexity limit");
+        if (roomInput) return Json::parse(bytes.begin(), bytes.end(), [&](int depth, Json::parse_event_t event, Json& value) {
+            using Event = Json::parse_event_t;
+            if (depth > 128) throw std::runtime_error("Room model JSON exceeds complexity limit (depth): " + path);
+            if (value.is_string() && value.get_ref<std::string const&>().size() > (1u << 20))
+                throw std::runtime_error("Room model JSON exceeds string length limit: " + path);
+            // Count each array, object, and scalar once across the entire model.
+            if ((event == Event::array_start || event == Event::object_start || event == Event::value)
+                && ++roomJsonNodes > 6'000'000)
+                throw std::runtime_error("Room model JSON exceeds complexity limit (node count): " + path);
             return true;
         }, true, true);
         return Json::parse(bytes.begin(), bytes.end(), nullptr, true, true);
@@ -553,6 +558,34 @@ Json ModelPack::uiInfo(std::filesystem::path const& source) {
 
 Json ModelPack::catalogLanguages() const { return catalogTranslations(languages); }
 
+// Older YSMParser exports store the arrow's texture set among the player
+// variants and omit the reference on files.projectiles.arrow. The original
+// binary keeps the two texture lists separate. Normalize only this layout.
+static bool restoreExportedArrowTexture(Json& descriptor) {
+    auto& files = descriptor.at("files");
+    auto projectiles = files.find("projectiles");
+    if (projectiles == files.end() || !projectiles->is_object()) return false;
+    auto arrow = projectiles->find("arrow");
+    if (arrow == projectiles->end() || !arrow->is_object() || arrow->contains("texture") || arrow->contains("match") ||
+        arrow->value("model", Json()) != "models/arrow.json") return false;
+    auto& variants = files.at("player").at("texture");
+    if (!variants.is_array() || variants.size() < 2 ||
+        descriptor.at("properties").value("default_texture", Json()) == "_ARROW_") return false;
+    auto isArrowTexture = [](Json const& variant) {
+        return variant.is_object() && variant.value("uv", Json()) == "textures/_ARROW_.png";
+    };
+    auto found = variants.end();
+    for (auto it = variants.begin(); it != variants.end(); ++it) {
+        if (!isArrowTexture(*it)) continue;
+        if (found != variants.end()) return false;
+        found = it;
+    }
+    if (found == variants.end()) return false;
+    (*arrow)["texture"] = *found;
+    variants.erase(found);
+    return true;
+}
+
 ModelPack ModelPack::load(std::filesystem::path const& source) {
     return loadImpl(source, false, nullptr);
 }
@@ -568,6 +601,8 @@ ModelPack ModelPack::loadImpl(std::filesystem::path const& source, bool roomInpu
     ModelPack result;
     result.descriptor = readManifest(input);
     if (result.descriptor.value("spec", 0) != 2) throw std::runtime_error("Only YSM spec 2 source packages are supported");
+    if (restoreExportedArrowTexture(result.descriptor))
+        result.warnings.push_back("Recovered arrow texture from YSMParser player texture list: textures/_ARROW_.png");
     auto& properties = result.descriptor.at("properties");
     if (input.packedV3()) result.legacyOriginVersion = static_cast<std::uint32_t>(
         std::stoul(properties.at("originVer").get<std::string>()));
@@ -626,23 +661,6 @@ ModelPack ModelPack::loadImpl(std::filesystem::path const& source, bool roomInpu
     auto wanted = properties.value("default_texture", "");
     if (!wanted.empty() && !result.selectTexture(wanted))
         result.warnings.push_back("Default texture not found; using " + result.currentTexture().name + ": " + wanted);
-    if (std::any_of(result.textures.begin(), result.textures.end(), [](auto const& t) { return t.normal || t.specular; })) {
-        if (input.contains("texture.properties")) {
-            auto bytes = input.read("texture.properties");
-            std::istringstream lines(std::string(bytes.begin(), bytes.end()));
-            for (std::string line; std::getline(lines, line);) {
-                auto start = line.find_first_not_of(" \t\r");
-                if (start == line.npos || line[start] == '#' || line[start] == '!') continue;
-                auto split = line.find_first_of("=: \t", start);
-                if (line.substr(start, split - start) != "format" || split == line.npos) continue;
-                auto value = line.find_first_not_of("=: \t", split);
-                auto format = value == line.npos ? "" : line.substr(value, line.find_last_not_of(" \t\r") - value + 1);
-                result.pbrEncoding = format == "lab-pbr" || format == "lab-pbr/1.3" ? PbrEncoding::LabPbr13 : PbrEncoding::OldPbr;
-                if (format.starts_with("lab-pbr/") && format != "lab-pbr/1.3")
-                    result.warnings.push_back("Unrecognized PBR version " + format + "; using oldPBR mapping");
-            }
-        }
-    }
     result.animations = Json::object();
     auto animations = player.value("animation", Json::object());
     if (!animations.is_object() && !animations.is_null()) throw std::runtime_error("Invalid player animation file map");
@@ -748,6 +766,8 @@ ModelPack ModelPack::loadImpl(std::filesystem::path const& source, bool roomInpu
                 target.id = "projectile/" + std::to_string(11000 + i).substr(1);
                 result.warnings.push_back("Recovered projectile from vehicle model entry: " + target.matches.front());
             }
+            if (!entry.contains("texture"))
+                throw std::runtime_error("Missing texture for " + target.id + " (" + target.matches.front() + ")");
             target.texture = readTexture(entry.at("texture"), "default");
             result.targets.push_back(std::move(target));
         }
@@ -755,6 +775,24 @@ ModelPack ModelPack::loadImpl(std::filesystem::path const& source, bool roomInpu
     readTargets(ReplacedModelKind::Projectile, "projectiles");
     readTargets(ReplacedModelKind::Projectile, "arrow", true);
     readTargets(ReplacedModelKind::Vehicle, "vehicles");
+    auto hasPbr = [](ModelTexture const& t) { return t.normal || t.specular; };
+    if (std::ranges::any_of(result.textures, hasPbr) || std::ranges::any_of(result.targets, hasPbr, &ReplacedModelTarget::texture)) {
+        if (input.contains("texture.properties")) {
+            auto bytes = input.read("texture.properties");
+            std::istringstream lines(std::string(bytes.begin(), bytes.end()));
+            for (std::string line; std::getline(lines, line);) {
+                auto start = line.find_first_not_of(" \t\r");
+                if (start == line.npos || line[start] == '#' || line[start] == '!') continue;
+                auto split = line.find_first_of("=: \t", start);
+                if (line.substr(start, split - start) != "format" || split == line.npos) continue;
+                auto value = line.find_first_not_of("=: \t", split);
+                auto format = value == line.npos ? "" : line.substr(value, line.find_last_not_of(" \t\r") - value + 1);
+                result.pbrEncoding = format == "lab-pbr" || format == "lab-pbr/1.3" ? PbrEncoding::LabPbr13 : PbrEncoding::OldPbr;
+                if (format.starts_with("lab-pbr/") && format != "lab-pbr/1.3")
+                    result.warnings.push_back("Unrecognized PBR version " + format + "; using oldPBR mapping");
+            }
+        }
+    }
     auto functionPath = result.descriptor.at("files").value("function_path", "functions");
     if (functionPath.find_first_not_of(" \t\r\n") == std::string::npos) functionPath = "functions";
     while (functionPath.ends_with('/') || functionPath.ends_with('\\')) functionPath.pop_back();

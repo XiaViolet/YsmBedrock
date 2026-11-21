@@ -52,7 +52,7 @@ public:
     void stopExtra();
     void updateExtraMovement(bool locked, float strafe, float forward, bool jump, bool sneak);
     void relayEnabled(bool enabled);
-    RelayPose outgoingPose(std::uint64_t& eventSequence, bool takeEvents);
+    RelayPose outgoingPose(Player const& owner, std::uint64_t& eventSequence, bool takeEvents);
     void applyPeerPose(RelayPose const& peer, std::uint64_t& eventCursor, bool replaceAction, Player const& actor);
     void remoteFrame();
     bool hasWorldBodyPose() const;
@@ -61,11 +61,12 @@ public:
     void setPaused(bool paused);
     void setHostInputs(std::set<int> keys, bool inGame, std::map<std::string, std::string> const& versions, bool newFrame = false);
     void setRenderTexture(NativeTextureSet texture, std::string const& name);
+    void trackSeats(std::weak_ptr<class NativeReplacedResources> source);
     void prepareForRender(Player& player, AnimationComponent& component);
     void reportFirstPersonPass(bool rendered);
     void prepareGeometry(RenderController& controller, std::shared_ptr<DataDrivenGeometry> const& geometry, RenderParams& params);
     std::span<BoneVisual const> boneVisuals(SkinnedMesh const& mesh, RenderController const* controller,
-        std::span<BoneVisual> local, std::vector<BoneVisual>& overflow);
+        std::span<BoneVisual> local, std::vector<BoneVisual>& overflow, Actor const* owner = nullptr);
     bool needsIndividualSurfaces(Actor const& actor) const;
     bool rendersPlayer(Actor const& actor) const;
     unsigned handDrawMask(Actor const& actor, bool offhand, bool nativeUi) const;

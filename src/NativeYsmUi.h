@@ -17,9 +17,9 @@ public:
     void updateMenu(IClientInstance& client, std::uint64_t session, UiSnapshot snapshot, std::shared_ptr<ModelPreview const> candidate);
     void toggle(IClientInstance& client, bool wheel);
     void close(IClientInstance* client = nullptr);
-    void diagnostics(std::filesystem::path path);
+    void diagnostics(std::filesystem::path const& directory, bool debug);
     bool key(IClientInstance& client, int code, bool down, bool control);
-    bool mouse(IClientInstance& client, int button, int value, float x, float y);
+    bool mouse(IClientInstance& client, int button, int value, float x, float y, float dx, float dy);
     bool isOpen() const;
     bool showsModels() const;
     void beginFrame();

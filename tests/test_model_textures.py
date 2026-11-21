@@ -123,6 +123,19 @@ class ModelTextureTests(unittest.TestCase):
                     self.assertEqual(texture['normal']['bedrock_first_pixel'], [128, 128, 255, 255])
                     self.assertEqual(texture['specular']['mers_first_pixel'], expected)
 
+    def test_pack_encoding_applies_when_only_replaced_entity_declares_pbr(self):
+        for section, item in [('projectiles', 'minecraft:arrow'), ('vehicles', 'minecraft:boat')]:
+            with self.subTest(section=section):
+                manifest = self.manifest(['a.png'])
+                manifest['files'][section] = {item: {'model': 'main.json', 'texture': {
+                    'uv': 'a.png', 'normal': 'n.png', 'specular': 's.png'}}}
+                report = self.run_pack(['a.png'], {'a.png': png(), 'n.png': png(), 's.png': png(),
+                    'ysm.json': json.dumps(manifest).encode(), 'texture.properties': b'format=lab-pbr/1.3'})
+                self.assertEqual(report['pbr_encoding'], 'lab-pbr/1.3')
+                self.assertIsNone(report['textures'][0]['normal'])
+                self.assertEqual(report['replaced_targets'][0]['texture']['normal'], 'n.png')
+                self.assertEqual(report['replaced_targets'][0]['texture']['specular'], 's.png')
+
     def test_native_cache_distinguishes_pbr_variants_with_identical_albedo(self):
         images = {'a.png': png(), 'b.png': png(), 'data.png': png()}
         variants = [{'uv': 'a.png', 'normal': 'data.png'}, {'uv': 'b.png', 'specular': 'data.png'}]
