@@ -8,17 +8,20 @@
   <strong><a href="https://github.com/XiaViolet/YsmBedrock/releases/tag/v0.29.44">0.29.44 预览版</a></strong> · Windows x64 · Minecraft 1.26.60.05
 </p>
 
+> [!IMPORTANT]
+> 导入模组前，请先在对应的游戏实例中安装 **LeviLamina 客户端版**。本版支持 26.60.7、26.60.8 或 [26.60.9](https://github.com/LiteLDev/LeviLamina/releases/tag/v26.60.9)。
+
 <p align="center">
   <a href="https://github.com/XiaViolet/YsmBedrock/releases/download/v0.29.44/YsmBedrock-0.29.44.mcmod"><strong>下载 LeviLauncher · .mcmod</strong></a>
   &nbsp; · &nbsp;
   <a href="https://github.com/XiaViolet/YsmBedrock/releases/download/v0.29.44/YsmBedrock-0.29.44-BedrockBoot.zip"><strong>下载 BedrockBoot · .zip</strong></a>
 </p>
 
-![原创封面插画，紫色体素角色与同姿态的线框模型](docs/images/cover.webp)
+![YsmBedrock 实机截图，樱木建筑前的角色与发光法杖](docs/images/gameplay.webp)
 
 ## 快速开始
 
-本版使用 [LeviLamina 26.60.9 客户端](https://github.com/LiteLDev/LeviLamina/releases/tag/v26.60.9)构建。手动安装包适用于 LeviLamina 26.60.7、26.60.8 或 26.60.9 客户端。通过 lip 安装时会使用 26.60.9。
+本版使用 LeviLamina 26.60.9 客户端构建。通过 lip 安装时会使用 26.60.9。
 
 先退出游戏，在启动器里选择对应的 Minecraft 实例，再导入上方对应的安装包。
 
@@ -47,7 +50,7 @@
 
 ## 源码与署名
 
-YsmBedrock 是 [Yes Steve Model](https://github.com/YesSteveModel/YesSteveModel) 的非官方基岩版移植。基岩版移植代码主要由 **OpenAI Codex** 编写，由 **XiaViolet** 维护。首页封面由 OpenAI 图像生成工具制作。
+YsmBedrock 是 [Yes Steve Model](https://github.com/YesSteveModel/YesSteveModel) 的非官方基岩版移植。基岩版移植代码主要由 **OpenAI Codex** 编写，由 **XiaViolet** 维护。
 
 - [源码](src/) · [回归测试](tests/) · [构建与维护](docs/维护框架.md) · [Java 功能对照](docs/Java功能对照.md)
 - [第三方声明](THIRD_PARTY_NOTICES.md) · [许可文件](licenses/) · [酒狐署名](licenses/wine-fox-source.json) · [魔法酒狐署名](licenses/magical-wine-fox-source.json)
