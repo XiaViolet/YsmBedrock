@@ -209,12 +209,15 @@ class ClientGeometryTests(unittest.TestCase):
                                      ({'grip': [-1,0,1]}, 5)]:
                 out = subprocess.check_output([str(EXE), '--hand-masks', str(path), json.dumps(scales)])
                 self.assertEqual(json.loads(out), [expected, 0])
-            passes = [{'inventory': False, 'scales': {'grip': [0,0,0]}},
+            passes = [{'inventory': False, 'draw': True},
+                      {'inventory': False, 'scales': {'grip': [0,0,0]}},
                       {'inventory': True, 'scales': {}},
+                      {'inventory': False, 'ui_context': True, 'remote': True, 'draw': True},
+                      {'inventory': False, 'ui_context': True, 'draw': True},
                       {'inventory': True, 'scales': {'root': [0,0,0]}},
                       {'inventory': False, 'scales': {}}]
             samples = subprocess.check_output([str(EXE), '--hand-masks', str(path), json.dumps(passes)])
-            self.assertEqual(json.loads(samples), [[4,5], [4,5], [4,0], [5,0]])
+            self.assertEqual(json.loads(samples), [[1,0], [4,1], [4,5], [4,0], [5,0], [4,0], [5,0]])
             geometry = self.inspect(path)
             bones = {b['name']: b for b in geometry['geometry']['minecraft:geometry'][0]['bones']}
             self.assertEqual(bones['leftitem']['parent'], 'leftarm')

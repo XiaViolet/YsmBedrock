@@ -106,6 +106,84 @@ struct Lab {
         }));
     }
 };
+void hostFiresArrows(){
+    Lab l;
+    auto asset=model('a');
+    l.host.owns(asset);
+    l.host.room->publish(asset,state("skin"));
+    l.join("A");
+    l.run(40);
+    using Shots=std::vector<std::pair<std::int64_t,bool>>;
+    Shots expected{{-2714419330716LL,false},{-2714419330715LL,true}};
+    for(auto [id,crossbow]:expected) l.host.room->serverArrow("H",id,crossbow);
+    l.host.room->publish(asset,state("skin","switched_hand"));
+    l.run(5);
+    check(l.a.room->frame().players.at("H").arrows==expected,"guest lost host bow/crossbow after hand change");
+    l.join("B");
+    l.run(20);
+    check(l.b.room->frame().players.at("H").arrows==expected,"late guest lost host bow/crossbow");
+    std::cout<<"PASS observer receives host bow and crossbow with signed game entity IDs before and after join\n";
+}
+void authoritativeArrows(){
+    Lab l;auto asset=model('b');l.a.owns(asset);l.a.room->publish(asset,state("skin"));l.join("A");l.run(40);
+    l.host.room->serverArrow("A",-12345,false);
+    l.host.room->serverArrow("A",9987,true);
+    l.join("B");l.run(40);
+    auto shots=l.b.room->frame().players.at("A").arrows;
+    check(shots.size()==2 && shots[0].first==-12345 && !shots[0].second && shots[1].first==9987 && shots[1].second,
+        "late observer lost bow/crossbow launch identity");
+    auto spoof=state("skin");spoof.arrows={{9987,false}};l.a.room->publish(asset,spoof);l.run(10);
+    check(l.b.room->frame().players.at("A").arrows==shots,"guest pose changed authoritative arrows");
+    // Three arrow entities leave the same crossbow in one game tick.
+    for(auto id:{777,778,779,779})l.host.room->serverArrow("A",id,true);
+    l.run(6);
+    shots=l.b.room->frame().players.at("A").arrows;
+    check(shots.size()==5 && shots[2].first==777 && shots[3].first==778 && shots[4].first==779 &&
+        shots[2].second && shots[3].second && shots[4].second,"multishot lost or duplicated an entity");
+    auto old=std::ranges::find_if(l.trace.rbegin(),l.trace.rend(),[](auto const& sample){
+        return sample.to=="B" && sample.h.at("t")=="arrows";
+    })->bytes;
+    l.a.room->publish(asset,state("next"));l.run(10);
+    l.b.room->receive("",old,l.now);
+    check(l.b.room->frame().players.at("A").arrows.empty(),"new selection inherited old projectiles");
+    l.host.room->serverArrow("A",780,false);
+    RoomRules denied;denied.deniedKeys.insert(asset.contentKey);l.host.room->setRules(denied);
+    auto before=l.trace.size();l.run(6);
+    check(!l.b.room->frame().players.contains("A"),"revoked shooter remains visible as model");
+    check(std::none_of(l.trace.begin()+before,l.trace.end(),[](auto const& s){return s.h.at("t")=="arrows";}),
+        "pending shot sent after model permission revoked");
+    l.host.room->setRules({});l.run(6);
+    l.host.room->serverArrow("A",781,false);l.leave("A");l.run(6);l.join("A");l.run(15);
+    l.b.room->receive("",old,l.now);
+    check(l.b.room->frame().players.at("A").arrows.empty(),"old connection arrows survived shooter rejoin");
+    std::cout<<"PASS authoritative bow/crossbow, multishot, late observer, spoof rejection, selection, revoke and rejoin\n";
+}
+void locomotionInputs(){
+    // At 40k blocks, float interpolation on individual render frames can alternate
+    // between zero displacement and a whole coordinate unit in the last place.
+    auto left=playerTravelAxes({40000,0},{39999.99609375f,0},0);
+    auto right=playerTravelAxes({40000,0},{40000.00390625f,0},0);
+    check(left[0]==1 && left[1]==0 && right[0]==-1 && right[1]==0,"signed lateral input");
+    auto diagonal=playerTravelAxes({10000.f,20000.f},{10000.0703125f,20000.072265625f},45);
+    check(diagonal[0]<-.99 && diagonal[1]==0,"rounded strafe manufactured forward/backward motion");
+    auto rest=playerTravelAxes({40000,0},{40000,0},0);
+    check(rest[0]==0 && rest[1]==0,"stopped player retains travel input");
+
+    Lab l;auto asset=model('b');l.a.owns(asset);
+    auto p=state("skin");p.locomotion=PlayerLocomotion{true,true,5.5,.4,left};
+    l.a.room->publish(asset,p);l.join("A");l.join("B");l.run(30);
+    for(auto* n:{&l.host,&l.b}){
+        auto m=n->room->frame().players.at("A").locomotion;
+        check(m && m->onGround && m->sprinting && m->axes==left && m->groundSpeed==5.5,"owner sprint and axes lost");
+    }
+    p.flight=1u;p.locomotion=PlayerLocomotion{false,false,3,.2,right};l.a.room->publish(asset,p);l.run(8);
+    auto airborne=l.b.room->frame().players.at("A");
+    check(airborne.flight==1 && airborne.locomotion && !airborne.locomotion->onGround && airborne.locomotion->axes==right,
+        "low flight kept observer ground contact");
+    p.locomotion.reset();l.a.room->publish(asset,p);l.run(8);
+    check(!l.b.room->frame().players.at("A").locomotion,"legacy snapshot retained stale owner movement");
+    std::cout<<"PASS complete-tick strafe at large coordinates; owner sprint, flight and movement through A -> host -> B\n";
+}
 void flightAndAuthorFormSnapshots() {
     Lab l; auto asset=model('b'); l.a.owns(asset);
     auto pose=state("skin"); pose.flight=1u; pose.formValues={{"variable.t7",2},{"variable.t8",6}};
@@ -513,7 +591,7 @@ void formatsAndEvents(){
 }
 }
 int main(){
-    flightAndAuthorFormSnapshots();
+    hostFiresArrows();authoritativeArrows();locomotionInputs();flightAndAuthorFormSnapshots();
     try{distribution();authorization();priorityAndStale();failure();manualRecovery(false);manualRecovery(true);retryAfterAllControlsLost();retryMissingPublication();retryPartialAndCached();pausedTransfer(false);pausedTransfer(true);displayReports();asyncFinish();formatsAndEvents();selectionAcknowledgement();vanillaIdle();transferWindows();peerTransferRates();return 0;}
     catch(std::exception const& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}
 }

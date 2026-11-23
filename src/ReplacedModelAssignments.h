@@ -49,6 +49,7 @@ public:
     void mounted(std::int64_t vehicle, std::int64_t rider, std::int64_t firstPassenger);
     void dismounted(std::int64_t rider);
     void projectileOwnerSet(std::int64_t projectile, std::int64_t owner);
+    void projectileServerShot(std::int64_t entity,std::int64_t owner,bool crossbow);
     void projectileClientOwnerSet(std::int64_t projectile, std::int64_t owner, std::string shootItemId);
     std::shared_ptr<ReplacedModelAssignment const> find(ReplacedModelKind kind, std::int64_t entity) const;
     void forget(ReplacedModelKind kind, std::int64_t entity);

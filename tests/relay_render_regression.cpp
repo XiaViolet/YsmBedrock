@@ -28,6 +28,21 @@ void uploadAndBind(Snapshot const& snapshot, Skin& selected) {
 }
 
 int main() {
+    using namespace std::chrono_literals;
+    using Cache=ysm::detail::RelayWarmModels<std::shared_ptr<int>>;
+    Cache cache;
+    auto now=std::chrono::steady_clock::time_point{};
+    auto compiled=std::make_shared<int>(42);
+    Cache::Key key{"digest","skin"};
+    cache.keep(key,compiled,now);
+    cache.prune(now+1s,[](auto const&){return true;});
+    require(cache.find(key)==compiled && !cache.find({"digest","other"}),"fast return must reuse the exact compiled resources");
+    cache.keep({"b","skin"},compiled,now+1s);
+    cache.keep({"c","skin"},compiled,now+2s);
+    require(!cache.find(key),"bounded warm cache must evict its oldest model");
+    cache.prune(now+31s,[](auto const& k){return k.first!="c";});
+    require(!cache.find({"c","skin"}) && !cache.find({"b","skin"}),"revocation and idle expiry must release resources");
+    std::cout << "PASS compiled model reuse, isolated textures, bounded eviction, permission revocation and expiry\n";
     Actor aliceActor, beaActor;
     auto alice = std::make_shared<Peer>(Peer{&aliceActor, {}});
     auto bea = std::make_shared<Peer>(Peer{&beaActor, {}});

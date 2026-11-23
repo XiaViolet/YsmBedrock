@@ -18,6 +18,7 @@ class AnimationComponent;
 class SkinnedMesh;
 namespace ysm {
 struct AnimationState;
+struct CompiledPlayerModel;
 class AnimationSampler;
 struct PreviewPose;
 class AnimationRuntime {
@@ -29,7 +30,9 @@ public:
     struct RoamingChanges { RoamingInstallationId installation; RoamingPayload delta; };
     AnimationRuntime();
     ~AnimationRuntime();
-    static Prepared prepare(ModelPack const& pack, std::filesystem::path diagnostics);
+    static std::shared_ptr<CompiledPlayerModel const> compileModel(ModelPack const& pack);
+    static Prepared prepare(ModelPack const& pack, std::filesystem::path diagnostics,
+        std::shared_ptr<CompiledPlayerModel const> compiled = {});
     static std::shared_ptr<AnimationSampler const> preparedBodySampler(Prepared const& prepared);
     std::string const* skinGeometry() const;
     static std::vector<std::string> preparedDiagnostics(Prepared const& prepared);

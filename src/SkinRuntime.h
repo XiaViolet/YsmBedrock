@@ -34,6 +34,7 @@ public:
     void apply(IClientInstance& client, Player& player, ModelPack const& pack, std::string_view owner = {},
         std::string const* preparedGeometry = nullptr);
     bool updateRenderTexture(IClientInstance& client, ClientSkinInfoData& skin, SerializedSkinRef const& serialized);
+    bool refreshIfReplaced(IClientInstance& client, Player& player);
     void restore(IClientInstance& client, Player& player);
     bool isActive() const { return active; }
     NativeTextureSet renderTexture() const { return uploadedTexture; }

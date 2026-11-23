@@ -105,7 +105,7 @@ void EntityQueries::bind(MolangContext& context, EntityQueryInput const& input) 
     number("query.yaw_speed", yawSpeed);
     auto x = finite(input.velocity[0], "velocity_x"), y = finite(input.velocity[1], "velocity_y"),
          z = finite(input.velocity[2], "velocity_z");
-    auto groundSpeed = finite(std::hypot(x, z) * 20, "query.ground_speed");
+    auto groundSpeed = finite(input.ownerGroundSpeed.value_or(std::hypot(x, z)*20), "query.ground_speed");
     context.queries["query.ground_speed"] = groundSpeed;
     auto renderTick = finite(input.renderTicks, "render_ticks");
     auto position = input.renderPosition.value_or(input.position);
@@ -136,7 +136,10 @@ void EntityQueries::bind(MolangContext& context, EntityQueryInput const& input) 
     number("query.vertical_speed", tickSpan > 0 ? delta[1] * 20 / tickSpan : 0);
     auto viewYaw = finite(input.viewYaw, "query.eye_target_y_rotation");
     double lateral = 0, forward = 0;
-    if (horizontal >= 1.0e-4) {
+    if(input.playerAxes){
+        lateral=(*input.playerAxes)[0];
+        forward=(*input.playerAxes)[1];
+    }else if (horizontal >= 1.0e-4) {
         constexpr double radians = std::numbers::pi / 180;
         auto motionAngle = std::atan2(delta[2], delta[0]) / radians;
         auto relative = wrap(motionAngle - (90 - wrap(-viewYaw))) * radians;

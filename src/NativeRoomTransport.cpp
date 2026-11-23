@@ -352,6 +352,7 @@ void RoomTransport::clientTick(IClientInstance& client, Player* local) {
                 }
             }
         } else if (f.frame.op == Op::Data && impl->guest.ready && impl->guest.pair.matches(f.frame)) {
+            impl->handshake.receivedLiveData(now);
             impl->event(RoomWireKind::Data, roomHostPeer, std::move(f.body));
         }
     }

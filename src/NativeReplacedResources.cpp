@@ -1,4 +1,5 @@
 #include "NativeReplacedResources.h"
+#include "ll/api/mod/NativeMod.h"
 #include "mc/client/model/models/SkinnedMesh.h"
 #include "mc/client/model/models/SkinnedMeshGroup.h"
 #include "NativeModelFactory.h"
@@ -22,6 +23,7 @@
 #include "JavaVanillaInputs.h"
 #include "RenderSpace.h"
 #include "mc/client/game/IClientInstance.h"
+#include "mc/client/multiplayer/ClientLevel.h"
 #include "mc/client/player/LocalPlayer.h"
 #include "mc/client/model/GeometryGroup.h"
 #include "mc/client/model/GeometryInfo.h"
@@ -325,6 +327,16 @@ struct NativeReplacedResources::Impl {
     std::shared_ptr<ModelPack const> ownerPack;
     std::optional<std::int64_t> ownerId;
     std::set<std::int64_t> peerOwnerIds;
+    struct PeerArrow {
+        std::int64_t owner;
+        bool crossbow;
+        std::uint64_t seen;
+        unsigned attempts{};
+        std::chrono::steady_clock::time_point retry{};
+    };
+    std::map<std::int64_t,PeerArrow> peerArrows;
+    std::uint64_t peerUpdate{};
+    unsigned shotReports{};
     std::uint64_t projectileOwnerEvents = 0;
     std::uint64_t projectileClientSpawnEvents = 0;
     std::weak_ptr<DataDrivenModel> prototype;
@@ -754,9 +766,21 @@ void NativeReplacedResources::clearOwner(std::int64_t owner) {
 void NativeReplacedResources::updatePeerOwners(std::span<PeerOwner const> peers) {
     std::scoped_lock lock(mutex);
     std::set<std::int64_t> active;
+    auto seen=++impl->peerUpdate;
     for (auto const& peer : peers) {
         if (!peer.pack || peer.id == impl->ownerId) continue;
         active.insert(peer.id);
+        for (auto const& [entity, crossbow] : peer.arrows) {
+            auto [it, inserted] = impl->peerArrows.try_emplace(entity, Impl::PeerArrow{peer.id, crossbow, seen});
+            if (inserted && impl->shotReports < 16) {
+                ++impl->shotReports;
+                if (auto mod = ll::mod::NativeMod::current()) mod->getLogger().info(
+                    "Room arrow observed entity={} owner={} item={}", entity, peer.id, crossbow ? "crossbow" : "bow");
+            }
+            if (!inserted && (it->second.owner != peer.id || it->second.crossbow != crossbow))
+                it->second = {peer.id, crossbow, seen};
+            it->second.seen = seen;
+        }
         if (!peer.pack->librarySource.empty()) {
             impl->knownSources[peer.pack->librarySource] = peer.pack;
             if (impl->missingSources.erase(peer.pack->librarySource))
@@ -764,8 +788,37 @@ void NativeReplacedResources::updatePeerOwners(std::span<PeerOwner const> peers)
         }
         impl->assignments.updatePeer(peer.id, peer.pack, peer.roaming, peer.mount);
     }
+    std::erase_if(impl->peerArrows,[&](auto const& e){return e.second.seen!=seen;});
     for (auto id : impl->peerOwnerIds) if (!active.contains(id) && id != impl->ownerId) impl->assignments.removeOwner(id);
     impl->peerOwnerIds = std::move(active);
+}
+// A network arrow can already be in the vanilla batch when its room message arrives.
+void NativeReplacedResources::preparePeerArrows(IClientInstance& client, std::filesystem::path const& path) {
+    auto* level = client.getLevel();
+    std::array<std::int64_t, 4> work{};
+    size_t count = 0;
+    auto now = std::chrono::steady_clock::now();
+    {
+        std::scoped_lock lock(mutex);
+        if (impl->peerArrows.empty() || !showProjectiles || !level || level != impl->clientLevel) return;
+        for (auto& [id, shot] : impl->peerArrows) {
+            if (shot.attempts >= 30 || now < shot.retry) continue;
+            ++shot.attempts;
+            shot.retry = now + std::chrono::milliseconds(150);
+            work[count++] = id;
+            if (count == work.size()) break;
+        }
+    }
+    for (size_t i = 0; i < count; ++i) {
+        auto* actor = level->fetchEntity(ActorUniqueID{work[i]}, false);
+        if (!actor || actor->getActorIdentifier().mCanonicalName->getString() != "minecraft:arrow") continue;
+        observeProjectile(*actor);
+        bool matched = hasActiveTarget(*actor);
+        if (matched && !resolveRenderer(*actor, {}, client, path)) continue;
+        std::scoped_lock lock(mutex);
+        if (auto it = impl->peerArrows.find(work[i]); it != impl->peerArrows.end())
+            it->second.attempts = 30;
+    }
 }
 void NativeReplacedResources::observeMount(Actor const& rider) {
     auto vehicle = rider.getVehicle();
@@ -783,11 +836,20 @@ void NativeReplacedResources::projectileOwnerSet(Actor const& projectile, std::i
         impl->assignments.projectileOwnerSet(projectile.getOrCreateUniqueID().rawID, owner);
 }
 void NativeReplacedResources::projectileClientSpawned(Actor const& projectile, LocalPlayer const* localPlayer) {
-    if (!projectile.hasType(ActorType::AbstractArrow)) return;
+    bool arrow = projectile.getActorIdentifier().mCanonicalName->getString() == "minecraft:arrow";
+    if (!arrow && !projectile.hasType(ActorType::AbstractArrow)) return;
     auto entity = projectile.getOrCreateUniqueID().rawID;
     auto owner = projectile.getOwnerId().rawID;
     std::scoped_lock lock(mutex);
     ++impl->projectileClientSpawnEvents;
+    if (arrow && &projectile.getLevel() == impl->clientLevel) {
+        if (auto it = impl->peerArrows.find(entity); it != impl->peerArrows.end()) {
+            it->second.attempts = 0;
+            it->second.retry = {};
+            impl->assignments.projectileServerShot(entity, it->second.owner, it->second.crossbow);
+            return;
+        }
+    }
     auto assigned = impl->assignments.find(ReplacedModelKind::Projectile, entity);
     auto* shooter = projectile.getLevel().fetchEntity(ActorUniqueID{owner}, false);
     if (!shooter && assigned) {
@@ -818,10 +880,20 @@ void NativeReplacedResources::projectileClientSpawned(Actor const& projectile, L
 }
 void NativeReplacedResources::observeProjectile(Actor const& projectile) {
     auto component = projectile.getEntityContext().tryGetComponent<ProjectileComponent>();
-    if (!component && !projectile.hasType(ActorType::FishingHook)
+    bool arrow=projectile.hasType(ActorType::AbstractArrow)
+        || projectile.getActorIdentifier().mCanonicalName->getString()=="minecraft:arrow";
+    if (!component && !arrow && !projectile.hasType(ActorType::FishingHook)
         && !projectile.hasType(ActorType::FireworksRocket) && !projectile.hasType(ActorType::Projectile)) return;
     auto owner = component ? component->mOwnerId->rawID : projectile.getOwnerId().rawID;
     std::scoped_lock lock(mutex);
+    if(arrow && &projectile.getLevel()==impl->clientLevel){
+        auto entity=projectile.getOrCreateUniqueID().rawID;
+        auto shot=impl->peerArrows.find(entity);
+        if(shot!=impl->peerArrows.end()){
+            impl->assignments.projectileServerShot(entity,shot->second.owner,shot->second.crossbow);
+            return;
+        }
+    }
     if (component && !impl->assignments.ownerActive(owner)) owner = projectile.getOwnerId().rawID;
     if (!impl->assignments.ownerActive(owner)) return;
     auto entity = projectile.getOrCreateUniqueID().rawID;

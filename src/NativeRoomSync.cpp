@@ -70,6 +70,8 @@ struct NativeRoomSync::Impl {
     std::size_t incomingBytes{}, outgoingBytes{};
     std::uint64_t acceptedTx{}, received{};
     std::set<std::string> endpoints;
+    struct Shot {std::string shooter;std::int64_t entity;bool crossbow;};
+    std::deque<Shot> shots;
     std::deque<std::string> commands;
     std::optional<LocalState> local;
     std::atomic<std::shared_ptr<RoomView const>> latest;
@@ -77,7 +79,7 @@ struct NativeRoomSync::Impl {
         std::lock_guard lock(mutex);
         ++generation; role=next; self=std::move(id);
         for(auto const& [_,permit]:permits)permit->store(false);
-        permits.clear();input.clear(); output.clear(); endpoints.clear(); commands.clear(); local.reset();
+        permits.clear();input.clear(); output.clear(); endpoints.clear(); shots.clear(); commands.clear(); local.reset();
         incomingBytes=outgoingBytes=0;acceptedTx=received=0; latest.store({}); wake.notify_one();
     }
     void run(std::stop_token stop) {
@@ -104,7 +106,7 @@ struct NativeRoomSync::Impl {
         auto done=[](Job& f){return f.wait_for(std::chrono::seconds(0))==std::future_status::ready;};
         while (!stop.stop_requested()) {
             std::unique_lock lock(mutex);
-            auto hasWork=[&]{return stop.stop_requested() || generation!=live || !input.empty() || !commands.empty() || local.has_value();};
+            auto hasWork=[&]{return stop.stop_requested() || generation!=live || !input.empty() || !commands.empty() || !shots.empty() || local.has_value();};
             if(endpoints.empty() && publications.empty() && verifications.empty()){
                 // Transport membership, settings and world transitions all wake the worker.
                 // No room timers or file completions need polling in a solo world.
@@ -118,6 +120,7 @@ struct NativeRoomSync::Impl {
             auto who=self;
             std::deque<RoomWireEvent> events; events.swap(input); incomingBytes=0;
             std::deque<std::string> tasks; tasks.swap(commands);
+            std::deque<Shot> newShots;newShots.swap(shots);
             auto state=std::exchange(local,{});
             bool haveEndpoints=!endpoints.empty();
             // One protocol tick emits at most 32 controls (128 KiB) plus four chunks.
@@ -201,6 +204,7 @@ struct NativeRoomSync::Impl {
                     else if(event.kind==RoomWireKind::Left)room->left(peer);
                     else room->receive(peer,event.payload,ms);
                 }
+                for(auto const& shot:newShots)room->serverArrow(shot.shooter,shot.entity,shot.crossbow);
                 for(auto const& task:tasks){
                     if(task=="reload"){refresh();source.clear();}
                     else if(next==RoomRole::Host && (task.starts_with("deny-once:") || task.starts_with("allow-once:"))){
@@ -411,6 +415,15 @@ void NativeRoomSync::stop(){
     impl->wire.stop();impl->change(RoomRole::None,{});
 }
 void NativeRoomSync::reset(){impl->wire.reset();impl->change(RoomRole::None,{});}
+void NativeRoomSync::recordServerArrow(std::string shooter,bool hostPlayer,std::int64_t entity,bool crossbow){
+    std::lock_guard lock(impl->mutex);
+    if(impl->role!=RoomRole::Host || impl->endpoints.empty() || !entity)return;
+    if(hostPlayer)shooter=impl->self;
+    if(shooter.empty())return;
+    if(std::ranges::any_of(impl->shots,[&](auto const& shot){return shot.entity==entity;}))return;
+    if(impl->shots.size()>=128)impl->shots.pop_front();
+    impl->shots.push_back({std::move(shooter),entity,crossbow});impl->wake.notify_one();
+}
 void NativeRoomSync::serverTick(Level& level){impl->wire.serverTick(level);}
 void NativeRoomSync::tick(IClientInstance& client,Player* player){
     if(!impl->worker.joinable())return;

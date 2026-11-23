@@ -56,6 +56,11 @@ int main() {
     require(!renewed.finish(fresh.pair.make(Op::Ready)), "stale READY cannot complete a renewed attempt");
     require(!timer.expired(start + 19s, true) && timer.expired(start + 20s, true),
         "established sessions retain the longer heartbeat deadline");
+    for (auto t=10s; t<=1h; t+=10s) {
+        require(!timer.expired(start+t,true), "live idle player should retain its session");
+        timer.receivedLiveData(start+t);
+    }
+    require(timer.expired(start+1h+20s,true),"a silent session must still expire");
     require(!HostProbe{}.hello({Op::Hello, number(8), {}}, [] { return Nonce{}; }), "RNG failure must fail closed");
 
     auto head = encode(fresh.pair.make(Op::Data));

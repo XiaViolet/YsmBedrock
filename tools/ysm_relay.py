@@ -87,6 +87,15 @@ def player_state(data, owner, models, allowed):
         if type(flight) is not int or not 0 <= flight <= 3:
             raise ValueError("Invalid flight state")
         extra["flight"] = flight
+    if "motion" in data:
+        motion = data["motion"]
+        if not isinstance(motion, list) or len(motion) != 6 or any(type(v) is not bool for v in motion[:2]):
+            raise ValueError("Invalid player motion")
+        for v in motion[2:]:
+            finite_f32(v)
+        if motion[2] < 0 or any(abs(v) > 1.000001 for v in motion[4:]):
+            raise ValueError("Invalid player motion range")
+        extra["motion"] = motion
     forms = data.get("form_values", {})
     if not isinstance(forms, dict) or len(forms) > 128:
         raise ValueError("Invalid form state")

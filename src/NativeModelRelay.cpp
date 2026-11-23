@@ -24,6 +24,10 @@
 namespace ysm {
 using Clock = std::chrono::steady_clock;
 namespace {
+struct RemoteModelResources {
+    std::shared_ptr<ModelPack const> model;
+    std::shared_ptr<CompiledPlayerModel const> compiled;
+};
 struct InstalledPeer {
     std::string xuid, session, contentKey, texture, digest;
     Player* actor{};
@@ -31,13 +35,14 @@ struct InstalledPeer {
     std::atomic<std::array<std::int64_t,2>> shoulderBirds{};
     AnimationRuntime animation;
     SkinRuntime skin;
-    std::shared_ptr<ModelPack const> model;
+    RemoteModelResources resources;
+    Clock::time_point nextSkinCheck{};
     std::uint64_t actionSerial{}, eventCursor{}, lastSerial{};
     bool worldPoseReported = false;
     std::atomic_bool textureChanged{};
 };
 struct Candidate {
-    std::shared_ptr<ModelPack const> model;
+    RemoteModelResources resources;
     AnimationRuntime::Prepared animation;
 };
 bool matches(IClientInstance& client, ModelRelay const& transport) {
@@ -98,7 +103,8 @@ struct NativeModelRelay::Impl {
     }
     std::int64_t preparingActor{};
     std::uintptr_t preparingInstance{};
-    std::map<std::pair<std::string,std::string>,std::weak_ptr<ModelPack const>> decoded;
+    detail::RelayWarmModels<RemoteModelResources> warmModels;
+    using ModelKey = decltype(warmModels)::Key;
     std::string session, localXuid, outgoingModel;
     std::uint64_t serial{}, eventSequence{};
     std::vector<RelayEvent> outgoingEvents;
@@ -118,6 +124,7 @@ struct NativeModelRelay::Impl {
     bool endpointsConfirmed = false;
     bool hideOthers = false;
     bool measure{};
+    std::uint64_t freshPreparations{}, reusedPreparations{}, skinReapplications{};
     std::mutex frameTimesMutex;
     std::vector<float> frameTimes;
     Clock::time_point lastFrame{}, nextSample{};
@@ -130,7 +137,9 @@ struct NativeModelRelay::Impl {
         Json result{{"world",session},{"time_ms",std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count()},
             {"players",latest.players.size()},{"bound",peers.size()},{"ready_files",view->ready.size()},
             {"sent_to_transport_bytes",view->acceptedTxBytes},{"received_payload_bytes",view->receivedBytes},
-            {"frame_samples",times.size()},{"states",view->states}};
+            {"frame_samples",times.size()},{"states",view->states},
+            {"fresh_model_preparations",freshPreparations},{"reused_model_preparations",reusedPreparations},
+            {"remote_skin_reapplications",skinReapplications}};
         if(auto ping=room.latencyMs())result["host_ping_ms"]=*ping;
         if(!times.empty()){
             result["frame_ms_p50"]=times[(times.size()-1)/2];
@@ -197,7 +206,8 @@ struct NativeModelRelay::Impl {
             }
         }
         {std::lock_guard lock(frameTimesMutex);frameTimes.clear();lastFrame={};}
-        decoded.clear(); view.reset(); native=false; selectionTexture.clear(); trackVisibility=false;
+        freshPreparations = reusedPreparations = skinReapplications = 0;
+        warmModels.clear(); view.reset(); native=false; selectionTexture.clear(); trackVisibility=false;
         {std::lock_guard lock(seenMutex);lastSeen.clear();}
         peers.clear();
         delivered.clear();failures.clear();
@@ -230,6 +240,10 @@ void NativeModelRelay::configure(std::filesystem::path directory) {
     catch (std::exception const& error) { impl->error = error.what(); }
     try { impl->room.start(impl->root); } catch(std::exception const& e){impl->error=e.what();}
     impl->status();
+}
+void NativeModelRelay::recordServerArrow(Player& shooter,std::int64_t entity,bool crossbow){
+    bool hostPlayer = shooter.mIsHostingPlayer;
+    impl->room.recordServerArrow(hostPlayer ? std::string{} : roomPlayerKey(shooter), hostPlayer, entity, crossbow);
 }
 void NativeModelRelay::serverTick(Level& level){impl->room.serverTick(level);}
 void NativeModelRelay::roomCommand(std::string command){
@@ -472,6 +486,15 @@ void NativeModelRelay::tick(IClientInstance& client, Player* player, ModelPack c
         });
     }
     auto& level = player->getLevel();
+    auto authorizedModel = [&](Impl::ModelKey const& key) {
+        return std::ranges::any_of(data.latest.players, [&](auto const& item) {
+            auto const& [id, pose] = item;
+            auto asset = data.latest.assets.find(pose.contentKey);
+            return !data.hides(id) && pose.texture == key.second && asset != data.latest.assets.end()
+                && asset->second.digest == key.first;
+        });
+    };
+    data.warmModels.prune(now,authorizedModel);
     std::erase_if(data.failures,[&](auto const& f){
         auto it=data.latest.players.find(f.first);
         return it==data.latest.players.end() || it->second.session!=f.second.stream;
@@ -483,6 +506,8 @@ void NativeModelRelay::tick(IClientInstance& client, Player* player, ModelPack c
         if (!actor || actor != entry->actor || actor->getOrCreateUniqueID().rawID!=entry->actorId || data.hides(entry->xuid) || found == data.latest.players.end() || entry->session != found->second.session
             || entry->contentKey != found->second.contentKey || entry->texture != found->second.texture
             || !data.latest.assets.contains(entry->contentKey) || data.latest.assets.at(entry->contentKey).digest!=entry->digest) {
+            Impl::ModelKey modelKey{entry->digest,entry->texture};
+            if (authorizedModel(modelKey)) data.warmModels.keep(std::move(modelKey),entry->resources,now);
             it = data.peers.erase(it);
             data.publishPeers();
             data.status();
@@ -495,6 +520,11 @@ void NativeModelRelay::tick(IClientInstance& client, Player* player, ModelPack c
                 entry->skin.reset();
             }
         } else {
+            if (now>=entry->nextSkinCheck && actor->mSkin) {
+                entry->nextSkinCheck=now+std::chrono::seconds(1);
+                try { if (entry->skin.refreshIfReplaced(client,*actor)) ++data.skinReapplications; }
+                catch(std::exception const& error){data.error=error.what();data.status();}
+            }
             // The native skin system may rebuild this component after publication.
             entry->animation.attach(*actor);
             if (!entry->worldPoseReported && entry->animation.hasWorldBodyPose()) {
@@ -518,6 +548,10 @@ void NativeModelRelay::tick(IClientInstance& client, Player* player, ModelPack c
             auto candidate = data.preparation.get();
             auto const& pending = data.preparing;
             auto actor = roomActor(level, pending.xuid);
+            if (data.preparingSession==data.session && data.stillCurrent(pending)
+                && (!actor || reinterpret_cast<std::uintptr_t>(actor)!=data.preparingInstance)
+                && authorizedModel({data.preparingDigest,pending.texture}))
+                data.warmModels.keep({data.preparingDigest,pending.texture},candidate.resources,now);
             if (actor && actor != player && actor->mSkin && reinterpret_cast<std::uintptr_t>(actor)==data.preparingInstance
                 && actor->getOrCreateUniqueID().rawID==data.preparingActor && data.preparingSession == data.session && data.stillCurrent(pending)
                 && data.latest.assets.contains(pending.contentKey) && data.latest.assets.at(pending.contentKey).digest==data.preparingDigest) {
@@ -542,14 +576,13 @@ void NativeModelRelay::tick(IClientInstance& client, Player* player, ModelPack c
                     binding=true;
                     entry->animation.attach(*actor);
                     entry->animation.applyPeerPose(current, entry->eventCursor, true, *actor);
-                    entry->skin.apply(client, *actor, *candidate.model, entry->xuid, entry->animation.skinGeometry());
+                    entry->skin.apply(client, *actor, *candidate.resources.model, entry->xuid, entry->animation.skinGeometry());
                     entry->animation.setRenderTexture(entry->skin.renderTexture(), entry->skin.textureName());
                     entry->animation.attach(*actor);
-                    entry->model=std::move(candidate.model);
+                    entry->resources=std::move(candidate.resources);
                     data.delivered[entry->xuid] = {entry->session, entry->contentKey, entry->eventCursor};
                     data.failures.erase(entry->xuid);
                     data.peers.emplace(entry->xuid,entry);data.publishPeers();
-                    data.decoded[{entry->digest,entry->texture}]=entry->model;
                 } catch (...) {
                     data.peers.erase(entry->xuid);
                     data.publishPeers();
@@ -596,24 +629,34 @@ void NativeModelRelay::tick(IClientInstance& client, Player* player, ModelPack c
     if(!actor)return;
     data.preparingActor=actor->getOrCreateUniqueID().rawID;
     data.preparingInstance=reinterpret_cast<std::uintptr_t>(actor);
-    std::erase_if(data.decoded,[](auto const& item){return item.second.expired();});
-    auto existing=data.decoded[{asset.digest,pending->texture}].lock();
+    auto existing = data.warmModels.find({asset.digest, pending->texture});
+    if (!existing.model) {
+        for (auto const& [id, peer] : data.peers) {
+            if (peer->digest == asset.digest && peer->texture == pending->texture) {
+                existing = peer->resources;
+                break;
+            }
+        }
+    }
+    if (existing.model) ++data.reusedPreparations;
+    else ++data.freshPreparations;
     auto path=data.native?data.view->ready.at(pending->contentKey):std::filesystem::path{};
     auto trace = data.measure ? data.root / "room-diagnostics" / std::to_string(data.preparingActor) / "animation-status.json" : std::filesystem::path{};
     data.preparation = std::async(std::launch::async, [relay=data.transport,asset,cache,path,existing,trace,texture=pending->texture] {
         auto shared=existing;
-        if(!shared){
+        if(!shared.model){
             auto pack=path.empty()?relay->obtain(asset,cache):loadRoomFile(path,asset);
             if(!texture.empty())pack.selectTexture(texture);
             pack.librarySource="server:"+asset.contentKey;
-            shared=std::make_shared<ModelPack const>(std::move(pack));
+            shared.model=std::make_shared<ModelPack const>(std::move(pack));
+            shared.compiled=AnimationRuntime::compileModel(*shared.model);
         }
         if (!trace.empty()) {
             std::error_code ec;
             std::filesystem::create_directories(trace.parent_path(), ec);
-            if (ec) return Candidate{shared,AnimationRuntime::prepare(*shared,{})};
+            if (ec) return Candidate{shared,AnimationRuntime::prepare(*shared.model,{},shared.compiled)};
         }
-        return Candidate{shared,AnimationRuntime::prepare(*shared,trace)};
+        return Candidate{shared,AnimationRuntime::prepare(*shared.model,trace,shared.compiled)};
     });
 }
 
@@ -640,8 +683,8 @@ std::vector<ModelEffects> NativeModelRelay::takeEffects(Player const& local) {
         if (!actor || actor != peer->actor) continue;
         auto sounds = peer->animation.takeSoundCues();
         auto particles = peer->animation.takeParticleCues();
-        if (!peer->model || (sounds.empty() && particles.empty())) continue;
-        result.push_back({peer, peer->model, actor->getEntityContext().getWeakRef(), std::move(sounds), std::move(particles)});
+        if (!peer->resources.model || (sounds.empty() && particles.empty())) continue;
+        result.push_back({peer, peer->resources.model, actor->getEntityContext().getWeakRef(), std::move(sounds), std::move(particles)});
     }
     return result;
 }
@@ -649,12 +692,12 @@ void NativeModelRelay::updateEntityOwners(NativeReplacedResources& resources, Pl
     std::vector<NativeReplacedResources::PeerOwner> owners;
     for (auto const& [id, peer] : impl->peers) {
         // Previously bound projectiles still depend on this visible owner.
-        if (!peer->model) continue;
+        if (!peer->resources.model) continue;
         auto* player = roomActor(local.getLevel(), id);
         auto state = impl->latest.players.find(id);
         if (!player || player != peer->actor || state == impl->latest.players.end()) continue;
         peer->animation.trackSeats(resources.weak_from_this());
-        NativeReplacedResources::PeerOwner owner{player->getOrCreateUniqueID().rawID, peer->model, state->second.roaming, {}};
+        NativeReplacedResources::PeerOwner owner{player->getOrCreateUniqueID().rawID, peer->resources.model, state->second.roaming, state->second.arrows, {}};
         if (auto* vehicle = player->getVehicle())
             if (auto* first = vehicle->getFirstPassenger())
                 owner.mount.emplace(vehicle->getOrCreateUniqueID().rawID, first->getOrCreateUniqueID().rawID);

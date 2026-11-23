@@ -74,6 +74,12 @@
 #include "mc/client/model/models/MeshInstanceConstants.h"
 #include "mc/client/model/geom/ModelPart.h"
 #include "mc/world/item/ItemStack.h"
+#include "mc/world/item/Item.h"
+#include "mc/world/item/components/ProjectileItemComponent.h"
+#include "mc/world/item/components/ShooterItemComponent.h"
+#include "mc/world/item/CrossbowItem.h"
+#include "mc/world/level/Spawner.h"
+#include "mc/world/actor/player/PlayerItemInUse.h"
 #include "mc/world/actor/ActorDefinitionIdentifier.h"
 #include "mc/world/actor/ActorDamageSource.h"
 #include "mc/world/actor/ActorType.h"
@@ -101,6 +107,24 @@ struct ActorDrawScope {
     Actor const* previous;
     explicit ActorDrawScope(Actor const* actor) : previous(std::exchange(current, actor)) {}
     ~ActorDrawScope() { current = previous; }
+};
+// Only valid on the game call stack that is creating this shot. No player
+// or item pointer from the integrated server is retained by the room worker.
+struct ArrowLaunchScope {
+    static inline thread_local ArrowLaunchScope* current = nullptr;
+    Player* player;
+    std::optional<bool> crossbow;
+    ArrowLaunchScope* previous;
+    static std::optional<bool> weapon(ItemStack const& stack) {
+        if (stack.isNull() || !stack.mItem) return {};
+        auto const& id = stack.mItem->mFullName->getString();
+        if (id == "minecraft:bow") return false;
+        if (id == "minecraft:crossbow") return true;
+        return {};
+    }
+    ArrowLaunchScope(Player* player, ItemStack const& stack)
+        : player(player), crossbow(weapon(stack)), previous(std::exchange(current, this)) {}
+    ~ArrowLaunchScope() { current = previous; }
 };
 class Mod {
     std::optional<ModelPack> pack;
@@ -648,6 +672,8 @@ public:
         ui.maintainMouse(client);
         ui.beginFrame();
         relay.frame();
+        if (targetRenderingEnabled)
+            targetResources.preparePeerArrows(client, self->getModDir() / "target-render-probe-status.json");
         if (runtime.isActive()) {
             bool inGame = client.getTopScreenName() == "hud_screen" && !ui.isOpen();
             if (client.getTopScreenName() != "hud_screen") keys.reset();
@@ -705,18 +731,47 @@ public:
             || actor.hasType(ActorType::Projectile)))
             targetResources.projectileOwnerSet(actor, owner.rawID);
     }
+    void publishSpawnedArrow(Actor* arrow, Actor* shooter) {
+        if (!arrow || !shooter || !shooter->isPlayer() || arrow->getLevel().isClientSide()
+            || &arrow->getLevel() != &shooter->getLevel()
+            || arrow->getActorIdentifier().mCanonicalName->getString() != "minecraft:arrow") return;
+        auto& player = static_cast<Player&>(*shooter);
+        auto* launch = ArrowLaunchScope::current;
+        auto weapon = launch && launch->player == &player ? launch->crossbow : std::nullopt;
+        if (!weapon) weapon = ArrowLaunchScope::weapon(*player.mItemInUse->mItem);
+        if (!weapon) weapon = ArrowLaunchScope::weapon(player.getCarriedItem());
+        if (!weapon) weapon = ArrowLaunchScope::weapon(player.getOffhandSlot());
+        if (!weapon) return;
+        auto id = arrow->getOrCreateUniqueID().rawID;
+        relay.recordServerArrow(player, id, *weapon);
+        static thread_local std::int64_t last = 0;
+        static thread_local unsigned samples = 0;
+        if (last != id && samples < 16) {
+            last = id;
+            ++samples;
+            self->getLogger().info("Room arrow launch entity={} owner={} host={} item={}", id,
+                player.getOrCreateUniqueID().rawID, bool(player.mIsHostingPlayer), *weapon ? "crossbow" : "bow");
+        }
+    }
     void recordProjectileShot(Actor& actor, ProjectileComponent const& component) {
-        if (!targetRenderingEnabled) return;
-        auto owner = component.mOwnerId->rawID;
-        targetResources.projectileOwnerSet(actor, owner);
+        targetResources.projectileOwnerSet(actor, component.mOwnerId->rawID);
+        if (actor.getLevel().isClientSide()) return;
+        auto* launch = ArrowLaunchScope::current;
+        auto* shooter = launch ? static_cast<Actor*>(launch->player) : nullptr;
+        if (!shooter) shooter = actor.getLevel().fetchEntity(*component.mOwnerId, false);
+        if (!shooter) shooter = actor.getLevel().fetchEntity(actor.getOwnerId(), false);
+        publishSpawnedArrow(&actor, shooter);
     }
     void recordClientActorSpawn(Actor const& actor, LocalPlayer const* localPlayer) {
         if (targetRenderingEnabled) targetResources.projectileClientSpawned(actor, localPlayer);
     }
     bool drawTarget(ActorRenderer& original, BaseActorRenderContext& context, ActorRenderData& data) {
         static thread_local unsigned depth = 0;
-        if (depth || !data.mActor || !targetRenderingEnabled
-            || !targetResources.hasActiveTarget(*data.mActor)) return false;
+        if (depth || !data.mActor || !targetRenderingEnabled) return false;
+        // A renderer retained by the game can enter draw without a fresh
+        // dispatcher lookup after the host confirmed the owner.
+        if (data.mActor->hasType(ActorType::AbstractArrow)) targetResources.observeProjectile(*data.mActor);
+        if (!targetResources.hasActiveTarget(*data.mActor)) return false;
         auto borrowed = std::shared_ptr<ActorRenderer>(&original, [](ActorRenderer*) {});
         auto replacement = resolveTargetRenderer(*data.mActor, borrowed);
         if (replacement == borrowed) return false;
@@ -1377,6 +1432,30 @@ LL_TYPE_INSTANCE_HOOK(TargetMountHook, ll::memory::HookPriority::Normal, Actor,
     if (result) Mod::getInstance().observeTargetMount(*this);
     return result;
 }
+LL_TYPE_INSTANCE_HOOK(BowLaunchHook, ll::memory::HookPriority::Normal, ShooterItemComponent,
+    &ShooterItemComponent::_shootProjectiles, void, ItemStack& stack, Player* player, int remaining) {
+    ArrowLaunchScope scope(player, stack);
+    origin(stack, player, remaining);
+}
+LL_TYPE_INSTANCE_HOOK(CrossbowLaunchHook, ll::memory::HookPriority::Normal, CrossbowItem,
+    &CrossbowItem::$use, ItemStack&, ItemStack& stack, Player& player, HandSlot hand) {
+    ArrowLaunchScope scope(&player, stack);
+    return origin(stack, player, hand);
+}
+LL_TYPE_INSTANCE_HOOK(PlayerProjectileHook, ll::memory::HookPriority::Normal, ProjectileItemComponent,
+    &ProjectileItemComponent::shootProjectile, Actor*, BlockSource& region, Vec3 const& pos,
+    Vec3 const& direction, float power, Player* player) {
+    auto* arrow = origin(region, pos, direction, power, player);
+    Mod::getInstance().publishSpawnedArrow(arrow, player);
+    return arrow;
+}
+LL_TYPE_INSTANCE_HOOK(SpawnerProjectileHook, ll::memory::HookPriority::Normal, Spawner,
+    &Spawner::$spawnProjectile, Actor*, BlockSource& region, ActorDefinitionIdentifier const& type,
+    Actor* shooter, Vec3 const& pos, Vec3 const& dir) {
+    auto* arrow = origin(region, type, shooter, pos, dir);
+    Mod::getInstance().publishSpawnedArrow(arrow, shooter);
+    return arrow;
+}
 LL_TYPE_INSTANCE_HOOK(TargetProjectileShootHook, ll::memory::HookPriority::Normal, ProjectileComponent,
     static_cast<void (ProjectileComponent::*)(Actor&, Vec3 const&, float, float, Vec3 const&, Actor*)>(&ProjectileComponent::shoot),
     void, Actor& actor, Vec3 const& direction, float power, float uncertainty, Vec3 const& baseSpeed, Actor* target) {
@@ -1538,7 +1617,7 @@ using TargetDataDrawHooks = ll::memory::HookRegistrar<TargetDataDrawHook>;
 using TargetBoatDrawHooks = ll::memory::HookRegistrar<TargetBoatDrawHook>;
 using TargetTridentDrawHooks = ll::memory::HookRegistrar<TargetTridentDrawHook>;
 using TargetOwnerHooks = ll::memory::HookRegistrar<TargetOwnerSetHook, TargetMountHook>;
-using TargetShootHooks = ll::memory::HookRegistrar<TargetProjectileShootHook>;
+using TargetShootHooks = ll::memory::HookRegistrar<TargetProjectileShootHook, BowLaunchHook, CrossbowLaunchHook, PlayerProjectileHook, SpawnerProjectileHook>;
 using TargetSpawnHooks = ll::memory::HookRegistrar<TargetActorSpawnHook>;
 using EntityStorageHooks = ll::memory::HookRegistrar<TargetSaveHook, TargetLoadHook>;
 LL_TYPE_INSTANCE_HOOK(ArrowDamageHook, ll::memory::HookPriority::Normal, Mob,

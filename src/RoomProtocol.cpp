@@ -219,6 +219,7 @@ struct RoomProtocol::Impl {
     Tick catalogVersion{}, broadcastVersion{};
     std::map<std::string,Tick> stateVersion;
     RoomDisplays lastReported;
+    std::map<std::string,Tick> observedShotSequence;
     bool hostReports{}, hostChunkWindows{}, hostRetry{};
     RoomByteRate downloadRate;
     RoomPeerRates rates;
@@ -289,11 +290,20 @@ struct RoomProtocol::Impl {
         }
         send(dest,"p/"+id,std::move(msg));
     }
+    void putArrows(std::string const& dest,std::string const& id,Member const& wearer){
+        if(id==dest)return;
+        if(!currentAllowed(wearer) || wearer.state.arrows.empty()){
+            controls[dest].erase("shots/"+id);
+            return;
+        }
+        send(dest,"shots/"+id,{{"t","arrows"},{"subject",id},{"stream",wearer.state.session},{"shots",wearer.state.arrows},{"seq",++seq}});
+    }
     void syncTo(std::string const& id,bool initial) {
         auto& dest=members.at(id);if(dest.nonce.empty())return;
         send(id,"catalog",{{"t","catalog"},{"assets",list(view.assets)},{"auto",rules.autoReceiveCurrent},{"shared_only",rules.sharedOnly}});
         putState(id,self,local,initial);
-        for(auto const& [who,m]:members)putState(id,who,m,initial);
+        putArrows(id,self,local);
+        for(auto const& [who,m]:members){putState(id,who,m,initial);putArrows(id,who,m);}
     }
     void rebuild(bool catalogChanged=true,std::string const& subject={}) {
         if(!host)return;
@@ -379,6 +389,7 @@ struct RoomProtocol::Impl {
         std::erase_if(failed,[&](auto const& k){return !view.assets.contains(k);});
         std::erase_if(retryAfter,[&](auto const& p){return !view.assets.contains(p.first);});
         std::erase_if(retryEpoch,[&](auto const& p){return !view.assets.contains(p.first);});
+        std::erase_if(observedShotSequence,[&](auto const& entry){return !view.players.contains(entry.first);});
         std::erase_if(lastReported,[&](auto const& p){return !view.players.contains(p.first);});
         if(host)for(auto& [_,member]:members){
             std::erase_if(member.retryReceipts,[&](auto const& p){auto m=owner(p.first);return !m || !currentAllowed(*m);});
@@ -484,7 +495,9 @@ struct RoomProtocol::Impl {
         }
         if(ok){
             auto prior=view.players.find(id);
-            if(prior!=view.players.end() && prior->second.session==streamKey)retainEvents(p,prior->second);
+            if(prior!=view.players.end() && prior->second.session==streamKey){
+                retainEvents(p,prior->second);p.arrows=std::move(prior->second.arrows);
+            }
             p.xuid=id;p.contentKey=k;p.session=streamKey;view.players[id]=std::move(p);
         }else{
             view.players.erase(id);if(!k.empty())status[k]="denied";
@@ -559,7 +572,7 @@ struct RoomProtocol::Impl {
                 if(changed && rev==m.revision)return;
                 require(presentation(p).dump().size()<48000);
                 if(rev!=m.revision)for(auto& [_,member]:members)member.eventFloors.erase(peer);
-                else retainEvents(p,m.state);
+                else {retainEvents(p,m.state);p.arrows=std::move(m.state.arrows);}
                 p.xuid=peer;p.contentKey=next?next->contentKey:"";p.session=stream(from,rev);
                 m.serial=p.serial;m.revision=rev;m.state=std::move(p);m.current=std::move(next);
                 rebuild(changed,peer);return;
@@ -576,6 +589,21 @@ struct RoomProtocol::Impl {
                 return;
             }
             if(!online || s!=room)return;
+            if(type=="arrows"){
+                auto id=field(j,"subject",80);
+                auto wearer=view.players.find(id);
+                if(wearer==view.players.end() || field(j,"stream",32)!=wearer->second.session)return;
+                auto const& shots=j.at("shots");
+                require(shots.is_array() && shots.size()<=32);
+                std::vector<std::pair<std::int64_t,bool>> list;
+                for(auto const& s:shots){
+                    require(s.is_array() && s.size()==2 && s[0].is_number_integer() && s[1].is_boolean());
+                    list.emplace_back(s[0].get<std::int64_t>(),s[1].get<bool>());
+                }
+                auto stamp=number(j.at("seq"));
+                if(stamp<=observedShotSequence[id])return;
+                observedShotSequence[id]=stamp;wearer->second.arrows=std::move(list);return;
+            }
             if(type=="rates"){
                 auto stamp=number(j.at("seq"));if(stamp<=ratesAt)return;
                 auto const& rows=j.at("rows");require(rows.is_array() && rows.size()<=maxMembers+1);
@@ -832,13 +860,13 @@ void RoomProtocol::left(std::string const& id){
         i.controls.erase(id);
         std::erase_if(i.acceptedFrom,[&](auto const& p){if(p.second!=id)return false;i.accepted.erase(p.first);return true;});
         for(auto& [who,m]:i.members)if(!m.nonce.empty()){
-            m.eventFloors.erase(id);i.send(who,"p/"+id,{{"t","gone"},{"subject",id}});
+            m.eventFloors.erase(id);i.controls[who].erase("shots/"+id);i.send(who,"p/"+id,{{"t","gone"},{"subject",id}});
         }
         i.rebuild();
     }else if(id.empty()){
         for(auto const& [_,d]:i.downloads)i.cancel(d.asset);
         i.downloads.clear();i.controls.clear();i.sends.clear();i.recheck.clear();i.failed.clear();i.status.clear();
-        i.remoteVersion.clear();i.stateVersion.clear();i.peerStatus.clear();i.lastReported.clear();i.retryAfter.clear();i.hostReports=false;
+        i.remoteVersion.clear();i.stateVersion.clear();i.peerStatus.clear();i.lastReported.clear();i.observedShotSequence.clear();i.retryAfter.clear();i.hostReports=false;
         i.catalogVersion=0;i.view={};i.link=false;i.online=false;i.room.clear();i.hostChunkWindows=false;i.downloadRate={};
         i.pendingRetries.clear();i.retryEpoch.clear();i.hostRetry=false;
         i.rates.clear();i.ratesAt=i.ratesSeenAt=0;
@@ -918,7 +946,7 @@ void RoomProtocol::publish(std::optional<RelayAsset> a,RelayPose p){
     auto revision=m.revision+(selection?1:0);
     p.xuid=i.self;p.serial=m.serial+1;p.session=stream(i.token,revision);p.contentKey=a?a->contentKey:"";
     auto encoded=presentation(p).dump();require(encoded.size()<48000);(void)pose(Json::parse(encoded));
-    if(i.host && !selection)retainEvents(p,m.state);
+    if(i.host && !selection){retainEvents(p,m.state);p.arrows=std::move(m.state.arrows);}
     m.serial=p.serial;m.revision=revision;
     m.state=std::move(p);m.current=std::move(a);
     if(i.host){
@@ -929,6 +957,19 @@ void RoomProtocol::publish(std::optional<RelayAsset> a,RelayPose p){
         if(selection){i.view.approved=!m.current;i.peerStatus.erase(i.self);}
         i.submitCurrent();
     }
+}
+void RoomProtocol::serverArrow(std::string const& shooter,std::int64_t entity,bool crossbow){
+    auto& i=*impl;
+    if(!i.host || !entity || i.members.empty())return;
+    auto it=i.members.find(shooter);
+    auto* wearer=shooter==i.self?&i.local:it==i.members.end()?nullptr:&it->second;
+    if(!wearer || !i.currentAllowed(*wearer))return;
+    auto& shots=wearer->state.arrows;
+    if(std::ranges::find(shots,entity,&std::pair<std::int64_t,bool>::first)!=shots.end())return;
+    if(shots.size()==32)shots.erase(shots.begin());
+    shots.emplace_back(entity,crossbow);
+    if(auto visible=i.view.players.find(shooter);visible!=i.view.players.end())visible->second.arrows=shots;
+    for(auto const& [id,m]:i.members)if(!m.nonce.empty())i.putArrows(id,shooter,*wearer);
 }
 void RoomProtocol::setVisible(std::set<std::string> ids){impl->visible=std::move(ids);}
 void RoomProtocol::retry(std::string const& subject,std::string const& streamId){

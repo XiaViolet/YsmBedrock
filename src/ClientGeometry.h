@@ -10,6 +10,16 @@ namespace ysm {
 class HandVisibilityByPass {
     std::array<std::atomic<unsigned>, 2> masks{};
 public:
+    explicit HandVisibilityByPass(std::array<unsigned, 2> declared) {
+        // Until this pass has evaluated the model, numbered grips may belong
+        // to an inactive form. Draw only the model's declared primary grips.
+        std::array<unsigned, 2> primary{declared[0] & 1u, declared[1] & 1u};
+        update(false, primary);
+        update(true, primary);
+    }
+    static bool inventoryPass(bool nativeUi, bool uiContext, bool inGame, bool remote) {
+        return nativeUi || (uiContext && !inGame && !remote);
+    }
     void update(bool inventory, std::array<unsigned, 2> hands) {
         masks[inventory].store(hands[0] | (hands[1] << 8), std::memory_order_relaxed);
     }

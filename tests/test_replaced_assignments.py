@@ -102,6 +102,18 @@ class ReplacedAssignmentTests(unittest.TestCase):
         self.assertEqual(frames[-1]['resolved']['pack'], 'a')
         self.assertEqual(frames[-1]['resolved']['roaming'], {'x': 1})
 
+    def test_observer_uses_server_shot_even_without_a_spawn_owner_or_after_a_slot_change(self):
+        for weapon in ('bow', 'crossbow'):
+            owner = dict(op='peer', owner=7, pack='b')
+            shot = dict(op='server_shot', entity=20, owner=7, crossbow=weapon == 'crossbow')
+            resolve = self.resolve('projectile', 20, 'arrow')
+            for spawn in ([], [dict(op='projectile_client_spawn', entity=20, owner=7, shoot_item_id='minecraft:stick')]):
+                with self.subTest(weapon=weapon, spawn=bool(spawn)):
+                    frames = self.run_events(owner, *spawn, shot, resolve)
+                    actual = frames[-1]['resolved']
+                    self.assertEqual((actual['pack'], actual['owner'], actual['shoot_item_id']),
+                                     ('b', 7, 'minecraft:' + weapon))
+
     def test_projectile_samples_the_client_slot_for_same_tick_and_delayed_switches(self):
         for weapon in ('minecraft:bow', 'minecraft:crossbow'):
             for client_item, later_item in (('minecraft:stick', weapon), (weapon, 'minecraft:stick')):

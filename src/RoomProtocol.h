@@ -69,6 +69,7 @@ public:
     bool acceptOffer(std::string const& peer, std::string const& contentKey);
     // Pass an empty asset to restore vanilla or withdraw an unavailable/protected model.
     void publish(std::optional<RelayAsset> asset, RelayPose pose);
+    void serverArrow(std::string const& shooter,std::int64_t entity,bool crossbow);
     void setVisible(std::set<std::string> peerIds);
     void select(std::string contentKey); // raise a catalog entry before switching or collecting
     void retry(std::string const& subject, std::string const& stream);

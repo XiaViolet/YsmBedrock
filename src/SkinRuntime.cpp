@@ -272,6 +272,17 @@ bool SkinRuntime::updateRenderTexture(IClientInstance& client, ClientSkinInfoDat
     return true;
 }
 
+bool SkinRuntime::refreshIfReplaced(IClientInstance& client, Player& player) {
+    if (!active || !applied || !player.mSkin || *player.mSkin->mSkinImpl->mObject.mId == renderId) return false;
+    // A Bedrock skin update can replace the remote actor's skin independently of
+    // our model selection. Preserve that newer vanilla skin for a later restore.
+    if (!player.mSkin->mSkinImpl->mObject.mId->starts_with("ysm.client."))
+        *original = *player.mSkin;
+    player.updateSkin(*applied, static_cast<int>(client.getClientSubId()));
+    ClientSkinSystem::applySkinToPlayer(client, player, *applied);
+    return true;
+}
+
 void SkinRuntime::restore(IClientInstance& client, Player& player) {
     if (active && original) {
         player.updateSkin(*original, static_cast<int>(client.getClientSubId()));

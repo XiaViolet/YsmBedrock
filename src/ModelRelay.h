@@ -1,5 +1,6 @@
 #pragma once
 #include "ModelPack.h"
+#include "PlayerLocomotion.h"
 #include "MolangRoaming.h"
 #include <array>
 #include <chrono>
@@ -34,24 +35,42 @@ struct RelayPose {
     std::uint64_t serial{};
     // Absent on older clients. Zero means both flight modes have ended.
     std::optional<unsigned> flight;
+    std::optional<PlayerLocomotion> locomotion;
     std::map<std::string, float> formValues;
     std::uint64_t actionSerial{};
     double actionTime{};
     std::array<std::int64_t, 2> shoulderBirds{};
     RoamingPayload roaming;
     std::vector<RelayEvent> events;
+    // Host-observed arrow unique ID and launcher (true = crossbow). Never read from guest pose data.
+    std::vector<std::pair<std::int64_t,bool>> arrows;
     std::map<std::string, RelayReceipt> receipts;
 };
 
 // Both native rooms and the optional relay carry the same bounded additions.
 inline void writePoseExtras(Json& message, RelayPose const& state) {
     if (state.flight) message["flight"] = *state.flight;
+    if(state.locomotion){
+        auto const& m=*state.locomotion;
+        message["motion"]={m.onGround,m.sprinting,m.groundSpeed,m.walkSpeed,m.axes[0],m.axes[1]};
+    }
     if (!state.formValues.empty()) message["form_values"] = state.formValues;
 }
 inline void readPoseExtras(Json const& message, RelayPose& state) {
     if (auto f = message.find("flight"); f != message.end()) {
         if (!f->is_number_unsigned() || f->get<std::uint64_t>() > 3) throw std::runtime_error("Invalid flight state");
         state.flight = f->get<unsigned>();
+    }
+    if(auto it=message.find("motion");it!=message.end()){
+        auto const& m=*it;
+        if(!m.is_array() || m.size()!=6 || !m[0].is_boolean() || !m[1].is_boolean())
+            throw std::runtime_error("Invalid player motion");
+        for(unsigned i=2;i<6;++i)if(!m[i].is_number() || !std::isfinite(m[i].get<float>()))
+            throw std::runtime_error("Invalid player motion component");
+        if(m[2].get<double>()<0 || std::abs(m[4].get<double>())>1.000001 || std::abs(m[5].get<double>())>1.000001)
+            throw std::runtime_error("Invalid player motion range");
+        state.locomotion=PlayerLocomotion{m[0].get<bool>(),m[1].get<bool>(),m[2].get<double>(),m[3].get<double>(),
+            {m[4].get<double>(),m[5].get<double>()}};
     }
     if (auto values = message.find("form_values"); values != message.end()) {
         if (!values->is_object() || values->size() > 128) throw std::runtime_error("Invalid model form state");

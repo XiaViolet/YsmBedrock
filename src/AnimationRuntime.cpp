@@ -115,6 +115,17 @@ static Json nativeRenderStack() {
     }
     return result;
 }
+// These objects depend only on source contents. Each wearer constructs separate
+// controller clocks, Molang variables, physics and native render bindings.
+struct CompiledPlayerModel {
+    AnimationSampler body, arm;
+    HandAnimationController initialHands;
+    ClientGeometry geometry;
+    std::string skinGeometry;
+    CompiledPlayerModel(ModelPack const& pack, Json const& animations)
+        : body(animations, pack.mainGeometry), arm(pack.firstPersonAnimations(), pack.armGeometry),
+          initialHands(animations), geometry(ClientGeometry::build(pack)), skinGeometry(geometry.document.dump()) {}
+};
 struct AnimationState {
     struct CpuCost {
         std::uint64_t samples = 0;
@@ -128,9 +139,9 @@ struct AnimationState {
     };
     CpuCost prepareCpu, logicCpu, poseCpu;
     ModelUiBindings uiBindings;
-    std::shared_ptr<AnimationSampler const> bodySampler;
+    std::shared_ptr<CompiledPlayerModel const> compiled;
     AnimationSampler const& sampler;
-    AnimationSampler armSampler;
+    AnimationSampler const& armSampler;
     HandAnimationController hands;
     AnimationControllers controllers;
     AnimationControllers armControllers;
@@ -140,8 +151,7 @@ struct AnimationState {
     Json lastMaceSwing = Json::array();
     bool samplingMaceSwing = false;
     double lastMaceProgress = 0;
-    ClientGeometry geometry;
-    std::string skinGeometryJson;
+    ClientGeometry const& geometry;
     NativeRenderBindings bindings;
     bool visualMaterials = false;
     bool forceCutout = false;
@@ -205,7 +215,7 @@ struct AnimationState {
     std::set<std::string> observedStates;
     std::mutex frameMutex;
     std::weak_ptr<NativeReplacedResources> seatSource;
-    HandVisibilityByPass visibleHands;
+    HandVisibilityByPass visibleHands{geometry.handDrawMasks};
     std::atomic<bool> ysmLanceCharge = false;
     std::atomic<bool> worldBodyPosed = false;
     std::size_t calls = 0;
@@ -224,8 +234,9 @@ struct AnimationState {
     std::set<int> pressedKeys;
     std::map<std::string, std::string> modVersions;
     std::atomic<bool> inGame = false;
-    bool remote = false;
+    std::atomic<bool> remote = false;
     std::optional<unsigned> peerFlight;
+    std::optional<PlayerLocomotion> peerMotion;
     std::map<std::string,float> receivedFormValues;
     Json lastObservation = nullptr;
     std::size_t startupFirstPersonPasses = 0;
@@ -259,13 +270,10 @@ struct AnimationState {
         startupEvents.push_back(std::move(detail));
         std::ofstream(diagnostics.parent_path() / "animation-startup.json") << Json{{"events", startupEvents}}.dump(2);
     }
-    AnimationState(ModelPack const& pack, std::filesystem::path path)
-        : AnimationState(pack, std::move(path), pack.bodyAnimations()) {}
-    AnimationState(ModelPack const& pack, std::filesystem::path path, Json const& body)
-    : uiBindings(pack.descriptor), bodySampler(std::make_shared<AnimationSampler const>(body, pack.mainGeometry)),
-        sampler(*bodySampler), armSampler(pack.firstPersonAnimations(), pack.armGeometry), hands(body),
-        controllers(pack.controllers, ControllerPolicy::SourcePackage), armControllers(pack.controllers, ControllerPolicy::SourcePackage), geometry(ClientGeometry::build(pack)),
-        skinGeometryJson(geometry.document.dump()),
+    AnimationState(ModelPack const& pack, std::filesystem::path path, std::shared_ptr<CompiledPlayerModel const> resources)
+    : uiBindings(pack.descriptor), compiled(std::move(resources)), sampler(compiled->body), armSampler(compiled->arm),
+        hands(compiled->initialHands), controllers(pack.controllers, ControllerPolicy::SourcePackage),
+        armControllers(pack.controllers, ControllerPolicy::SourcePackage), geometry(compiled->geometry),
         textureName(pack.currentTexture().name), width(pack.widthScale), height(pack.heightScale), diagnostics(std::move(path)) {
         evaluation.expressions.physics = std::make_shared<MolangPhysics>();
         armEvaluation.expressions.physics = std::make_shared<MolangPhysics>();
@@ -284,8 +292,6 @@ struct AnimationState {
         auto const& key = pack.localContentKey;
         if (!diagnostics.empty() && key.size() == 71 && key.starts_with("local1_") && key.find_first_not_of("0123456789abcdef", 7) == key.npos)
             performanceReport = diagnostics.parent_path() / "performance" / (key + ".json");
-        visibleHands.update(false, geometry.handDrawMasks);
-        visibleHands.update(true, geometry.handDrawMasks);
         std::set<std::string> authoredRoots;
         for (auto const& bone : pack.mainGeometry["minecraft:geometry"][0]["bones"])
             if (!bone.contains("parent")) authoredRoots.insert(bone.at("name").get<std::string>());
@@ -470,6 +476,11 @@ static HandInput handInput(Player const& player, bool enabled) {
     return result;
 }
 
+static std::array<double,2> travelAxes(Player const& actor,double yaw){
+    auto previous=actor.getInterpolatedPosition(0.f),current=actor.getInterpolatedPosition(1.f);
+    return playerTravelAxes({previous.x,previous.z},{current.x,current.z},yaw);
+}
+
 static EntityQueryInput entityInput(Player const& player, float frameAlpha,
     HandInput const& hands, double modelTime) {
     EntityQueryInput input;
@@ -492,7 +503,8 @@ static EntityQueryInput entityInput(Player const& player, float frameAlpha,
     input.renderPosition = {feet.x + (interpolated.x - nativePosition.x), feet.y + (interpolated.y - nativePosition.y),
         feet.z + (interpolated.z - nativePosition.z)};
     auto previousYaw = player.mBuiltInComponents->mActorRotationComponent->mRotPrev->y;
-    input.viewYaw = previousYaw + (rotation.y - previousYaw) * partialTick;
+    input.viewYaw = previousYaw + std::remainder(double(rotation.y)-previousYaw,360.0)*partialTick;
+    input.playerAxes=travelAxes(player,input.viewYaw);
     auto previousPitch = player.mBuiltInComponents->mActorRotationComponent->mRotPrev->x;
     // ActorRenderData is absent in some real pose passes. Use the player's
     // interpolated head/body angles, matching Java's relative-yaw convention.
@@ -632,7 +644,8 @@ public:
             {"pose_calls", data->calls}});
         auto* renderData = static_cast<ActorRenderData*>(params.mActorRenderData);
         bool firstPerson = data->bindings.bind(params, data->texture, data->geometry.armParts);
-        bool inventory = (UiRenderContextTracker::isActive() && !data->inGame && !data->remote) || (renderData && renderData->mIsInUI);
+        bool inventory = HandVisibilityByPass::inventoryPass(renderData && renderData->mIsInUI,
+            UiRenderContextTracker::isActive(), data->inGame, data->remote);
         if (inventory) firstPerson = false;
         if (!data->nativeRenderStacks.contains("initial")) data->nativeRenderStacks["initial"] = nativeRenderStack();
         if (!inventory && data->calls >= 2000 && !data->nativeRenderStacks.contains("world"))
@@ -698,6 +711,14 @@ public:
         if (data->peerFlight) {
             nextInput.flying = (*data->peerFlight & 1u) != 0;
             nextInput.gliding = (*data->peerFlight & 2u) != 0;
+        }
+        if(data->peerMotion){
+            auto const& m=*data->peerMotion;
+            nextInput.onGround=m.onGround;
+            nextInput.sprinting=m.sprinting;
+            nextInput.ownerGroundSpeed=m.groundSpeed;
+            nextInput.walkAnimationSpeed=m.walkSpeed;
+            nextInput.playerAxes=m.axes;
         }
         current = nextInput.mainAnimation();
         if (!data->preview.empty()) current = data->preview;
@@ -1138,14 +1159,19 @@ struct AnimationRuntime::Impl {
 };
 AnimationRuntime::AnimationRuntime() : impl(std::make_unique<Impl>()) {}
 AnimationRuntime::~AnimationRuntime() { reset(); }
-AnimationRuntime::Prepared AnimationRuntime::prepare(ModelPack const& pack, std::filesystem::path diagnostics) {
-    return std::make_shared<AnimationState>(pack, std::move(diagnostics));
+std::shared_ptr<CompiledPlayerModel const> AnimationRuntime::compileModel(ModelPack const& pack) {
+    return std::make_shared<CompiledPlayerModel const>(pack, pack.bodyAnimations());
+}
+AnimationRuntime::Prepared AnimationRuntime::prepare(ModelPack const& pack, std::filesystem::path diagnostics,
+    std::shared_ptr<CompiledPlayerModel const> compiled) {
+    if (!compiled) compiled = compileModel(pack);
+    return std::make_shared<AnimationState>(pack, std::move(diagnostics), std::move(compiled));
 }
 std::shared_ptr<AnimationSampler const> AnimationRuntime::preparedBodySampler(Prepared const& prepared) {
-    return prepared ? prepared->bodySampler : nullptr;
+    return prepared ? std::shared_ptr<AnimationSampler const>(prepared->compiled, &prepared->sampler) : nullptr;
 }
 std::string const* AnimationRuntime::skinGeometry() const {
-    return impl->state ? &impl->state->skinGeometryJson : nullptr;
+    return impl->state ? &impl->state->compiled->skinGeometry : nullptr;
 }
 std::vector<std::string> AnimationRuntime::preparedDiagnostics(Prepared const& prepared) {
     return prepared ? prepared->controllers.report().at("diagnostics").get<std::vector<std::string>>() : std::vector<std::string>{};
@@ -1322,6 +1348,12 @@ RelayPose AnimationRuntime::outgoingPose(Player const& owner, std::uint64_t& eve
     // Local ability flags may not be replicated by Bedrock to observers.
     // Sample on the game tick even if the owner never renders their body.
     result.flight = (owner.isFlying() ? 1u : 0u) | (owner.isGliding() ? 2u : 0u);
+    auto velocity=owner.getPosDelta();
+    auto const& walk=*owner.mBuiltInMobComponents->mWalkAnimationComponent;
+    auto speed=std::hypot(double(velocity.x),double(velocity.z))*20;
+    if(std::isfinite(speed) && std::isfinite(float(walk.mWalkAnimSpeed)))
+        result.locomotion=PlayerLocomotion{owner.isOnGround(),owner.isSprinting(),speed,float(walk.mWalkAnimSpeed),
+            travelAxes(owner,owner.getRotation().y)};
     result.formValues = data.uiBindings.snapshotScalars(context);
     result.action = data.extra.name;
     result.actionSerial = data.extra.serial;
@@ -1343,6 +1375,7 @@ void AnimationRuntime::applyPeerPose(RelayPose const& peer, std::uint64_t& event
     std::scoped_lock lock(data.frameMutex);
     data.remote = true;
     data.peerFlight = peer.flight;
+    data.peerMotion = peer.locomotion;
     auto& context = data.evaluation.expressions;
     context.networkSync = false;
     auto const& feet = actor.getFeetPos();
@@ -1592,7 +1625,9 @@ bool AnimationRuntime::rendersPlayer(Actor const& actor) const {
 }
 unsigned AnimationRuntime::handDrawMask(Actor const& actor, bool offhand, bool nativeUi) const {
     auto state = impl->state;
-    return state && state->active && impl->target == &actor ? state->visibleHands.get(nativeUi || (UiRenderContextTracker::isActive() && !state->inGame), offhand) : 1u;
+    if (!state || !state->active || impl->target != &actor) return 1u;
+    auto inventory = HandVisibilityByPass::inventoryPass(nativeUi, UiRenderContextTracker::isActive(), state->inGame, state->remote);
+    return state->visibleHands.get(inventory, offhand);
 }
 bool AnimationRuntime::drivesLanceCharge(Actor const& actor) const {
     return rendersPlayer(actor) && impl->state->ysmLanceCharge.load();

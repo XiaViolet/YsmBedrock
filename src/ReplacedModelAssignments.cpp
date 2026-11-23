@@ -124,6 +124,16 @@ void ReplacedModelAssignments::projectileOwnerSet(std::int64_t projectile, std::
     if (previous == assignments.end() || previous->second->owner != owner)
         assign(key, current->second);
 }
+void ReplacedModelAssignments::projectileServerShot(std::int64_t entity,std::int64_t owner,bool crossbow){
+    if(!ownerActive(owner))return;
+    projectileOwnerSet(entity,owner);
+    auto& assigned=assignments.at({ReplacedModelKind::Projectile,entity});
+    auto hand=crossbow?"minecraft:crossbow":"minecraft:bow";
+    if(assigned->shootItemId==hand)return;
+    auto corrected=*assigned;
+    corrected.shootItemId=hand;
+    assigned=std::make_shared<ReplacedModelAssignment const>(std::move(corrected));
+}
 void ReplacedModelAssignments::projectileClientOwnerSet(std::int64_t projectile, std::int64_t owner, std::string shootItemId) {
     projectileOwnerSet(projectile, owner);
     auto assignment = assignments.find({ReplacedModelKind::Projectile, projectile});

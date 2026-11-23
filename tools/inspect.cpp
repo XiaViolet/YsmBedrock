@@ -77,6 +77,7 @@ static ysm::Json targetAssignments(ysm::Json const& input) {
             } else assignments.updateOwner(event.at("owner"), std::move(pack), values);
         } else if (op == "mount") assignments.mounted(event.at("vehicle"), event.at("rider"), event.at("first"));
         else if (op == "dismount") assignments.dismounted(event.at("rider"));
+        else if (op == "server_shot") assignments.projectileServerShot(event.at("entity"),event.at("owner"),event.at("crossbow"));
         else if (op == "projectile") assignments.projectileOwnerSet(event.at("entity"), event.at("owner"));
         else if (op == "projectile_client_spawn") {
             assignments.projectileClientOwnerSet(event.at("entity"), event.at("owner"), event.at("shoot_item_id"));
@@ -1257,13 +1258,15 @@ int wmain(int argc, wchar_t** argv) {
                 return geometry.visibleHandMasks(pose);
             };
             if (scales.is_array()) {
-                ysm::HandVisibilityByPass passes;
-                passes.update(false, geometry.handDrawMasks);
-                passes.update(true, geometry.handDrawMasks);
+                ysm::HandVisibilityByPass passes(geometry.handDrawMasks);
                 ysm::Json samples = ysm::Json::array();
                 for (auto const& frame : scales) {
-                    passes.update(frame.at("inventory").get<bool>(), fromPose(frame.at("scales")));
-                    samples.push_back({passes.get(false, false), passes.get(true, false)});
+                    auto inventory = ysm::HandVisibilityByPass::inventoryPass(frame.at("inventory").get<bool>(),
+                        frame.value("ui_context", false), frame.value("in_game", false), frame.value("remote", false));
+                    if (frame.contains("scales")) passes.update(inventory, fromPose(frame.at("scales")));
+                    if (frame.value("draw", false))
+                        samples.push_back({passes.get(inventory, false), passes.get(inventory, true)});
+                    else samples.push_back({passes.get(false, false), passes.get(true, false)});
                 }
                 std::cout << samples.dump() << '\n';
             } else std::cout << ysm::Json(fromPose(scales)).dump() << '\n';

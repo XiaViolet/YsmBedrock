@@ -22,7 +22,8 @@ struct EntityQueryInput {
     std::array<double, 3> velocity{};
     // Local movement input axes, independent of physical displacement.
     std::array<double, 3> moveInput{};
-    std::optional<double> walkAnimationSpeed;
+    std::optional<double> walkAnimationSpeed, ownerGroundSpeed;
+    std::optional<std::array<double,2>> playerAxes;
     double framesPerSecond = 0;
     bool nativeMoveInputAvailable = false;
     double yaw = 0, viewYaw = 0, bodyYaw = 0, headPitch = 0, headYaw = 0;

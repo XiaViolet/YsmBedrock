@@ -23,6 +23,7 @@ public:
     void configure(std::filesystem::path directory);
     void boundary();
     void serverTick(Level& level);
+    void recordServerArrow(Player& shooter,std::int64_t entity,bool crossbow);
     void roomCommand(std::string command);
     Json roomInfo() const;
     void tick(IClientInstance& client, Player* player, ModelPack const* model, AnimationRuntime& local, NativeReplacedResources const& resources);

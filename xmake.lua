@@ -1,7 +1,7 @@
 add_rules("mode.debug", "mode.release")
 add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")
 set_project("YsmBedrock")
-set_version("0.29.39")
+set_version("0.29.42")
 set_languages("c++20")
 set_runtimes("MD")
 set_toolchains("clang-cl")

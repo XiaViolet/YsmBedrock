@@ -92,6 +92,7 @@ struct GuestProbe {
 struct ProbeDeadline {
     using Clock = std::chrono::steady_clock;
     std::optional<Clock::time_point> since;
+    void receivedLiveData(Clock::time_point now) { since = now; }
     bool expired(Clock::time_point now, bool ready) const {
         return since && now - *since >= std::chrono::seconds(ready ? 20 : 5);
     }

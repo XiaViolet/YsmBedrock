@@ -31,6 +31,7 @@ public:
         std::int64_t id;
         std::shared_ptr<ModelPack const> pack;
         RoamingPayload roaming;
+        std::span<std::pair<std::int64_t,bool> const> arrows;
         std::optional<std::pair<std::int64_t, std::int64_t>> mount;
     };
     NativeReplacedResources();
@@ -46,6 +47,7 @@ public:
     void updateOwner(std::int64_t owner, ModelPack const& pack, RoamingPayload const& roaming);
     void clearOwner(std::int64_t owner);
     void updatePeerOwners(std::span<PeerOwner const> peers);
+    void preparePeerArrows(IClientInstance& client, std::filesystem::path const& path);
     void observeMount(Actor const& rider);
     void projectileOwnerSet(Actor const& projectile, std::int64_t owner);
     void projectileClientSpawned(Actor const& projectile, LocalPlayer const* localPlayer);

@@ -54,6 +54,16 @@ class RelayDeliveryTests(unittest.TestCase):
         return self.room.update(user, dict(protocol=1, xuid=user, serial=self.serials[user],
                                            model=self.model, session=self.session, **fields))
 
+    def test_owner_locomotion_preserves_signed_axes_and_resets_on_legacy_sample(self):
+        motion = [True, True, 5.5, 0.4, -1, 0]
+        self.update(self.sender, motion=motion)
+        self.assertEqual(self.update(self.reader)["players"][0]["motion"], motion)
+        self.update(self.sender)
+        self.assertNotIn("motion", self.update(self.reader)["players"][0])
+        for bad in [[0, True, 5.5, 0.4, -1, 0], [True, True, -2, 0, 0, 0], [True, False, 1, 0, 2, 0]]:
+            with self.assertRaises(ValueError):
+                self.update(self.sender, motion=bad)
+
     def test_flight_and_face_snapshot_survive_forwarding_and_landing(self):
         self.update(self.sender,flight=1,form_values={"variable.t8":6})
         state=self.update(self.reader)["players"][0]

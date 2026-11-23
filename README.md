@@ -2,11 +2,11 @@
 
 YsmBedrock 是 [Yes Steve Model](https://github.com/YesSteveModel/YesSteveModel) 面向 Minecraft 基岩版 Windows 客户端的非官方移植，支持导入 YSM 模型、替换玩家外观和播放动作。基岩版移植代码主要由 OpenAI Codex 编写，项目由 XiaViolet 维护。
 
-**源码版本 0.29.39** · Windows x64 · Minecraft 1.26.60.05 · LeviLamina 26.60.7／26.60.8
+**源码版本 0.29.42** · Windows x64 · Minecraft 1.26.60.05 · LeviLamina 26.60.7／26.60.8
 
 ## 安装与反馈
 
-0.29.39 在「联机玩家」加入模型重新下载和重新上传。房主与参与同步的玩家均需更新到同一版本。
+0.29.42 修正 BedrockBoot 客端创建替换箭模型时的版本识别。房主与参与同步的玩家均需更新到同一版本。[故障与复验记录](docs/0.29.42-观察端替换箭.md)
 
 [GitHub Releases](https://github.com/XiaViolet/YsmBedrock/releases) 提供发布版本的 `.mcmod`。也可下载[旧版 0.29.20 内测包](https://github.com/XiaViolet/YsmBedrock/blob/downloads/YsmBedrock-0.29.20.mcmod)。
 

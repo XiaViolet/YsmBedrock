@@ -31,6 +31,7 @@ public:
     void stop();
     void reset();
     void serverTick(Level&);
+    void recordServerArrow(std::string shooter,bool hostPlayer,std::int64_t entity,bool crossbow);
     void tick(IClientInstance&, Player*);
     bool active() const;
     bool host() const;
