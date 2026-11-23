@@ -1,32 +1,53 @@
-# YsmBedrock
+<h1 align="center">YsmBedrock</h1>
 
-YsmBedrock 是 [Yes Steve Model](https://github.com/YesSteveModel/YesSteveModel) 面向 Minecraft 基岩版 Windows 客户端的非官方移植，支持导入 YSM 模型、替换玩家外观和播放动作。基岩版移植代码主要由 OpenAI Codex 编写，项目由 XiaViolet 维护。
+<p align="center">
+  在 Minecraft 基岩版 Windows 客户端穿戴 YSM 模型、切换外观、播放自定义动作。
+</p>
 
-**源码版本 0.29.42** · Windows x64 · Minecraft 1.26.60.05 · LeviLamina 26.60.7／26.60.8
+<p align="center">
+  <strong><a href="https://github.com/XiaViolet/YsmBedrock/releases/tag/v0.29.44">0.29.44 预览版</a></strong> · Windows x64 · Minecraft 1.26.60.05
+</p>
 
-## 安装与反馈
+<p align="center">
+  <a href="https://github.com/XiaViolet/YsmBedrock/releases/download/v0.29.44/YsmBedrock-0.29.44.mcmod"><strong>下载 LeviLauncher · .mcmod</strong></a>
+  &nbsp; · &nbsp;
+  <a href="https://github.com/XiaViolet/YsmBedrock/releases/download/v0.29.44/YsmBedrock-0.29.44-BedrockBoot.zip"><strong>下载 BedrockBoot · .zip</strong></a>
+</p>
 
-0.29.42 修正 BedrockBoot 客端创建替换箭模型时的版本识别。房主与参与同步的玩家均需更新到同一版本。[故障与复验记录](docs/0.29.42-观察端替换箭.md)
+![原创封面插画，紫色体素角色与同姿态的线框模型](docs/images/cover.webp)
 
-[GitHub Releases](https://github.com/XiaViolet/YsmBedrock/releases) 提供发布版本的 `.mcmod`。也可下载[旧版 0.29.20 内测包](https://github.com/XiaViolet/YsmBedrock/blob/downloads/YsmBedrock-0.29.20.mcmod)。
+## 快速开始
 
-LeviLauncher 的「LeviMC 模组」目录使用仓库中的 `lip.toml` 安装 Windows x64 客户端版，依赖 LeviLamina 26.60.8。
+本版使用 [LeviLamina 26.60.9 客户端](https://github.com/LiteLDev/LeviLamina/releases/tag/v26.60.9)构建。手动安装包适用于 LeviLamina 26.60.7、26.60.8 或 26.60.9 客户端。通过 lip 安装时会使用 26.60.9。
 
-手动安装时，在 LeviLauncher 对应 Windows 实例的「模组管理」中导入。游戏内按 `Alt+Y` 打开模型库，按 `Z` 打开动作转盘。
+先退出游戏，在启动器里选择对应的 Minecraft 实例，再导入上方对应的安装包。
 
-- [0.29.20 内测记录](docs/0.29.20-内测说明.md)
-- [项目功能手册](docs/项目功能手册.md)
-- [房间同步](docs/0.29.19-房间模型同步.md)与[中继联机配置](docs/联机使用.md)
+| 启动器 | 导入位置 |
+| --- | --- |
+| **LeviLauncher** | 模组管理 → LeviLamina → 导入模组，选择 `.mcmod` |
+| **BedrockBoot** | 模组管理 → LeviLamina → 导入模组，直接选择 `.zip` |
 
-请在 [Issues](https://github.com/XiaViolet/YsmBedrock/issues) 报告问题，注明游戏、LeviLamina 和模组版本，以及复现步骤。
+进入游戏后，按 **`Alt+Y`** 打开模型库。可以试用内置的酒狐和魔法酒狐，也可以导入原始 ZIP、受支持的 `.ysm` 或模型文件夹。选好外观后点击「穿戴此模型」，按 **`Z`** 打开动作转盘。
 
-## 源码与构建
+## 模型与联机
 
-- [src/](src/) 包含游戏接入、模型加载、动画和界面实现。
-- [tests/](tests/) 包含回归测试及配套夹具。
-- 工程使用 xmake、clang-cl 和 LeviLamina 客户端 SDK。用 `tools/build.ps1 -Test` 构建并运行回归，细节见[维护框架](docs/维护框架.md)。
-- [Java 功能对照](docs/Java功能对照.md)记录实现差异与验证结果。
+- **模型库**支持预览模型、切换贴图、收藏与调整作者配置。
+- **动作转盘**用于播放模型自带的动作。
+- **好友房间**支持在房主允许后同步模型与外观。房主和参与同步的玩家请使用同一版 YsmBedrock。
 
-## 来源与许可
+[功能手册](docs/项目功能手册.md) · [好友房间同步](docs/0.29.19-房间模型同步.md) · [服务器中继配置](docs/联机使用.md)
 
-上游代码及依赖见[第三方声明](THIRD_PARTY_NOTICES.md)和[许可文件](licenses/)。内置模型的来源与作者署名见[酒狐](licenses/wine-fox-source.json)和[魔法酒狐](licenses/magical-wine-fox-source.json)的记录。
+## 0.29.44 更新
+
+修复 Arke 光影下第一人称低头时，快捷栏可见导致的角色地面投影闪烁。已在 Arke + Photon 1.4 环境复验。
+
+[本版更新与下载](https://github.com/XiaViolet/YsmBedrock/releases/tag/v0.29.44) · [投影复验记录](docs/0.29.44-Arke投影.md) · [历史版本](https://github.com/XiaViolet/YsmBedrock/releases)
+
+遇到问题可以提交 [GitHub Issue](https://github.com/XiaViolet/YsmBedrock/issues)。请附上游戏、LeviLamina、模组版本和复现步骤。光影问题也请注明 Arke 和光影包版本。
+
+## 源码与署名
+
+YsmBedrock 是 [Yes Steve Model](https://github.com/YesSteveModel/YesSteveModel) 的非官方基岩版移植。基岩版移植代码主要由 **OpenAI Codex** 编写，由 **XiaViolet** 维护。首页封面由 OpenAI 图像生成工具制作。
+
+- [源码](src/) · [回归测试](tests/) · [构建与维护](docs/维护框架.md) · [Java 功能对照](docs/Java功能对照.md)
+- [第三方声明](THIRD_PARTY_NOTICES.md) · [许可文件](licenses/) · [酒狐署名](licenses/wine-fox-source.json) · [魔法酒狐署名](licenses/magical-wine-fox-source.json)

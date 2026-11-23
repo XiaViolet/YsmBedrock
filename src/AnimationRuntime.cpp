@@ -126,6 +126,17 @@ struct CompiledPlayerModel {
         : body(animations, pack.mainGeometry), arm(pack.firstPersonAnimations(), pack.armGeometry),
           initialHands(animations), geometry(ClientGeometry::build(pack)), skinGeometry(geometry.document.dump()) {}
 };
+// The hand renderer temporarily zeroes the local actor's world rotation.
+struct PlayerViewAngles {
+    double yaw, viewYaw, pitch, bodyYaw, headYaw;
+    static PlayerViewAngles read(Player const& player, float alpha) {
+        auto rotation = player.getRotation();
+        auto previous = *player.mBuiltInComponents->mActorRotationComponent->mRotPrev;
+        return {rotation.y, previous.y + std::remainder(double(rotation.y) - previous.y, 360.0) * alpha,
+            previous.x + (rotation.x - previous.x) * alpha, player.getInterpolatedBodyRot(alpha),
+            player.getInterpolatedHeadRot(alpha)};
+    }
+};
 struct AnimationState {
     struct CpuCost {
         std::uint64_t samples = 0;
@@ -248,6 +259,7 @@ struct AnimationState {
     AnimationEvaluation armEvaluation;
     EntityQueries entityQueries;
     EntityQueryInput entitySnapshot;
+    std::optional<PlayerViewAngles> preHandAngles;
     BedrockWeatherSnapshot weatherSnapshot;
     Json motionChanges = Json::array();
     Pose cachedPose;
@@ -482,7 +494,7 @@ static std::array<double,2> travelAxes(Player const& actor,double yaw){
 }
 
 static EntityQueryInput entityInput(Player const& player, float frameAlpha,
-    HandInput const& hands, double modelTime) {
+    HandInput const& hands, double modelTime, PlayerViewAngles const* preHandAngles) {
     EntityQueryInput input;
     auto feet = player.getFeetPos();
     input.position = {feet.x, feet.y, feet.z};
@@ -495,22 +507,17 @@ static EntityQueryInput entityInput(Player const& player, float frameAlpha,
     // The game's completed-frame statistic is independent of how many body,
     // hand, UI or shadow pose callbacks happen during a display frame.
     input.framesPerSecond = ProfilerLite::gProfilerLiteInstance().mFrameData->mFPS;
-    auto rotation = player.getRotation();
-    input.yaw = rotation.y;
+
     auto partialTick = std::isfinite(frameAlpha) ? std::clamp(static_cast<double>(frameAlpha), 0.0, 1.0) : 0;
     input.renderTicks = modelTime * 20;
     auto nativePosition = player.getPosition(), interpolated = player.getInterpolatedPosition(static_cast<float>(partialTick));
     input.renderPosition = {feet.x + (interpolated.x - nativePosition.x), feet.y + (interpolated.y - nativePosition.y),
         feet.z + (interpolated.z - nativePosition.z)};
-    auto previousYaw = player.mBuiltInComponents->mActorRotationComponent->mRotPrev->y;
-    input.viewYaw = previousYaw + std::remainder(double(rotation.y)-previousYaw,360.0)*partialTick;
-    input.playerAxes=travelAxes(player,input.viewYaw);
-    auto previousPitch = player.mBuiltInComponents->mActorRotationComponent->mRotPrev->x;
-    // ActorRenderData is absent in some real pose passes. Use the player's
-    // interpolated head/body angles, matching Java's relative-yaw convention.
-    input.setHeadAngles(previousPitch + (rotation.x - previousPitch) * partialTick,
-        player.getInterpolatedBodyRot(static_cast<float>(partialTick)),
-        player.getInterpolatedHeadRot(static_cast<float>(partialTick)));
+    auto angles = preHandAngles ? *preHandAngles : PlayerViewAngles::read(player, static_cast<float>(partialTick));
+    input.yaw = angles.yaw;
+    input.viewYaw = angles.viewYaw;
+    input.playerAxes = travelAxes(player, angles.viewYaw);
+    input.setHeadAngles(angles.pitch, angles.bodyYaw, angles.headYaw);
     input.tick = player.mTickCount;
     input.uuidLeast = std::bit_cast<std::int64_t>(player.getUuid().b);
     if (auto value = player.getAttribute(SharedAttributes::HEALTH()); value.mPtr) {
@@ -699,7 +706,8 @@ public:
         auto frameAlpha = params.mBaseActorRenderContext ? params.mBaseActorRenderContext->mFrameAlpha : 0.0f;
         auto animationNow = data->paused ? data->pauseStarted : now;
         double parallelTime = std::chrono::duration<double>(animationNow - data->created).count();
-        auto nextInput = entityInput(*player, frameAlpha, hands, parallelTime);
+        auto preHand = FirstPersonRenderScope::isActive() && data->preHandAngles ? &*data->preHandAngles : nullptr;
+        auto nextInput = entityInput(*player, frameAlpha, hands, parallelTime, preHand);
         if (auto render = params.mBaseActorRenderContext; render && !data->remote)
             nextInput.viewPerspective = std::clamp(render->mClientInstance.getOptions().getPlayerViewPerspective(), 0, 2);
         if (!data->remote) {
@@ -1498,6 +1506,11 @@ void AnimationRuntime::prepareForRender(Player& player, AnimationComponent& comp
                 {"players", component.mComponentAnimationPlayers->size()}, {"pose_calls", impl->state->calls}});
     }
     attach(player);
+}
+void AnimationRuntime::capturePreHandAngles(Player const& owner, float alpha) {
+    if (!impl->state || impl->target != &owner || !impl->state->active) return;
+    std::scoped_lock lock(impl->state->frameMutex);
+    impl->state->preHandAngles = PlayerViewAngles::read(owner, std::isfinite(alpha) ? std::clamp(alpha, 0.f, 1.f) : 0.f);
 }
 void AnimationRuntime::reportFirstPersonPass(bool rendered) {
     if (!impl->state || !impl->state->active || impl->state->diagnostics.empty()) return;

@@ -112,7 +112,7 @@ YsmBedrock $version
 LeviLauncher：在对应实例中导入 $name.mcmod。
 BedrockBoot：退出对应游戏实例，在模组管理中选择 LeviLamina，点击「导入模组」，直接选择 $bedrockBootArchive。
 工程包：解压后退出该游戏实例，运行 .\install.ps1 -Instance '游戏实例目录'。
-适用 Minecraft 1.26.60.05、LeviLamina 26.60.7 或 26.60.8 的 Windows 客户端。
+适用 Minecraft 1.26.60.05、LeviLamina 26.60.7、26.60.8 或 26.60.9 的 Windows 客户端。
 Alt+Y 打开模型库并导入模型，Z 打开动作转盘。房间共享和验证范围见 README.md。
 内置官方基础款酒狐和魔法酒狐。署名、来源及模型许可见 mods/YsmBedrock/licenses。
 "@ | Set-Content -LiteralPath "$bundle/安装说明.txt" -Encoding utf8

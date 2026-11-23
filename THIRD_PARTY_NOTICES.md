@@ -5,7 +5,7 @@
 - 绘梨衣为开发者自行提供的回归样本。
 - YSM：<https://github.com/YesSteveModel/YesSteveModel>，参考提交 `15c2c25f5b50f54ee099bc474483dc4b588d956d`。Head 定位器、控制器状态机、内置播放器、骨骼复位、函数/控制器覆盖、defer 回调、本地 sync 独立交付轮、动作混合、纹理声明及时间线语义对照此提交改编为 C++。
 - YesSteveModel-Native：<https://github.com/YesSteveModel/YesSteveModel-Native>，参考提交 `907d1c653b7eb85ee92ee11305134408300797f8`，Apache-2.0。v1/v2 容器读取参考 `modules/legacy/src/bundle.cc` 改为使用 Windows 密码服务和 miniz。v3 适配采用官方容器读取器。
-- LeviLamina：<https://github.com/LiteLDev/LeviLamina>，构建依赖 26.60.7（客户端），LGPL-3.0；接口参考 checkout `dacca851fe5f8b97e292496f702db3a73b118f39`。
+- LeviLamina：<https://github.com/LiteLDev/LeviLamina>，构建依赖 26.60.9（客户端），LGPL-3.0；接口参考 checkout `922ff2e83cd3bccae56970d325cc3669344d8117`。
 - 默认动画资产来自 Java YSM 2.6.5 NeoForge 26.1.2 正式发行包的 CC0 默认模板，覆盖身体、第一人称、载具和投射物。来源和校验方式见 `licenses/ysm-default-animations.md`。[官方发行包](https://modrinth.com/mod/yes-steve-model/version/2.6.5-neoforge%2Bmc26.1-hotfix)
 - miniz：<https://github.com/richgel999/miniz>，3.1.0，MIT。
 - stb_image：<https://github.com/nothings/stb>，来自 LeviLamina 的固定依赖，MIT / public domain。

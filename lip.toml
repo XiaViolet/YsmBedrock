@@ -1,6 +1,6 @@
 format = 4
 id = "github.com/XiaViolet/YsmBedrock"
-version = "0.29.42"
+version = "0.29.44"
 
 [info]
 name = "YsmBedrock"
@@ -12,8 +12,8 @@ side = "client"
 platform = "win-x64"
 
 [variants."".deps]
-# 26.60.8 is the tested release with a Windows client entry under the default variant.
-"github.com/LiteLDev/LeviLamina" = "26.60.8"
+# Windows client runtime.
+"github.com/LiteLDev/LeviLamina" = "26.60.9"
 
 [[variants."".assets]]
 type = "mcmod"

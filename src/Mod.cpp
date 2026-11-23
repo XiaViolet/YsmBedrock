@@ -61,6 +61,7 @@
 #include "mc/client/renderer/controller/RenderController.h"
 #include "mc/client/model/models/DataDrivenGeometry.h"
 #include "mc/client/renderer/game/ItemInHandRenderer.h"
+#include "mc/deps/minecraft_renderer/game/ItemContextFlags.h"
 #include "mc/client/renderer/BaseActorRenderContext.h"
 #include "mc/deps/renderer/Camera.h"
 #include <glm/gtc/matrix_transform.hpp>
@@ -559,7 +560,9 @@ public:
             } catch (std::exception const& error) { uiMessage = "操作失败，当前模型已保留"; self->getLogger().warn("UI action failed: {}", error.what()); }
         }
     }
-    void renderFirstPerson(std::function<void()> const& draw) {
+    void renderFirstPerson(BaseActorRenderContext& context, std::function<void()> const& draw) {
+        if (FirstPersonRenderScope::depth() == 1)
+            if (auto* owner = context.mClientInstance.getLocalPlayer()) animation.capturePreHandAngles(*owner, context.mFrameAlpha);
         if (lastPlayer && uiSettings.value("disable_self_hands", false)) runtime.vanillaHands(*lastPlayer, draw); else draw();
     }
     bool suppressMenuMouseCapture(IClientInstance const& client) { return ui.suppressMouseCapture(client); }
@@ -1387,8 +1390,16 @@ LL_TYPE_INSTANCE_HOOK(PrepareGeometryHook, ll::memory::HookPriority::Normal, Ren
 }
 LL_TYPE_INSTANCE_HOOK(FirstPersonHook, ll::memory::HookPriority::Normal, ItemInHandRenderer,
     &ItemInHandRenderer::renderFirstPerson, void, BaseActorRenderContext& context, Matrix const& projection, ItemContextFlags flags) {
+    auto bits = static_cast<unsigned>(flags);
+    bool handPass = (bits & static_cast<unsigned>(ItemContextFlags::FirstPersonPass)) != 0;
+    bool otherPass = (bits & (static_cast<unsigned>(ItemContextFlags::WorldPass)
+        | static_cast<unsigned>(ItemContextFlags::UIPass))) != 0;
+    if (otherPass && !handPass) {
+        origin(context, projection, flags);
+        return;
+    }
     FirstPersonRenderScope scope;
-    Mod::getInstance().renderFirstPerson([&] { origin(context, projection, flags); });
+    Mod::getInstance().renderFirstPerson(context, [&] { origin(context, projection, flags); });
     Mod::getInstance().reportFirstPersonPass(true);
 }
 LL_TYPE_INSTANCE_HOOK(MenuMouseCaptureHook, ll::memory::HookPriority::Normal, ClientInstance,
@@ -1581,7 +1592,8 @@ LL_TYPE_INSTANCE_HOOK(BoneVisualMeshHook, ll::memory::HookPriority::Normal, Skin
         origin(screen, metadata, controller, subLayer, material, texture, queue, previous, mers, shadow, dithering);
         return;
     }
-    bool arkeWorldPass = !screen.isDrawingUI && !dithering && shadow != ShadowContext::ShadowOnly
+    bool arkeWorldPass = !screen.isDrawingUI && !screen.isDrawingFirstPersonObjects
+        && !FirstPersonRenderScope::isActive() && !dithering && shadow != ShadowContext::ShadowOnly
         && shadow != ShadowContext::PlayerShadowMapOnly && Mod::getInstance().usesArkeShader();
     drawBoneVisuals(*this, screen, queue, controller, material, visuals, arkeWorldPass, [&](MaterialVariants const& selected) {
         origin(screen, metadata, controller, subLayer, selected, texture, queue, previous, mers, shadow, dithering);

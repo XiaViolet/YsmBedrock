@@ -65,7 +65,7 @@ try {
     foreach($dir in @('.levilauncher','mods/LeviLamina')){[void][IO.Directory]::CreateDirectory((Join-Path $instance $dir))}
     [IO.File]::WriteAllBytes("$instance/Minecraft.Windows.exe",[byte[]]@())
     [IO.File]::WriteAllText("$instance/.levilauncher/instance.json",'{"gameVersion":"1.26.60.05"}')
-    [IO.File]::WriteAllText("$instance/mods/LeviLamina/manifest.json",'{"version":"26.60.7"}')
+    [IO.File]::WriteAllText("$instance/mods/LeviLamina/manifest.json",'{"version":"26.60.9"}')
     & "$repo/tools/install.ps1" -Instance $instance -Package "$base-preview.zip"
     Check (Test-Path -LiteralPath "$modDir/target-render-probe.enable" -PathType Leaf) 'Fresh install lost render flag'
     $mouseDiagnostics = 'mouse-diagnostics.enable' -cin $mod

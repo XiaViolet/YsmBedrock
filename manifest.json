@@ -1,7 +1,7 @@
 {
   "name": "YsmBedrock",
   "entry": "YsmBedrock.dll",
-  "version": "0.29.42",
+  "version": "0.29.44",
   "type": "native",
   "platform": "client",
   "description": "YSM models, animation and optional approved server-model synchronization for Bedrock client"

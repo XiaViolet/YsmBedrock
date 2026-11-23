@@ -8,8 +8,8 @@ $game = Join-Path $instanceRoot 'Minecraft.Windows.exe'
 if (!(Test-Path -LiteralPath $game -PathType Leaf)) { throw '请选择含有 Minecraft.Windows.exe 的实例目录' }
 $instanceInfo = Get-Content -LiteralPath "$instanceRoot/.levilauncher/instance.json" -Raw -Encoding utf8 | ConvertFrom-Json
 $loaderInfo = Get-Content -LiteralPath "$instanceRoot/mods/LeviLamina/manifest.json" -Raw -Encoding utf8 | ConvertFrom-Json
-if ($instanceInfo.gameVersion -ne '1.26.60.05' -or $loaderInfo.version -notin @('26.60.7','26.60.8')) {
-    throw '适用 Minecraft 1.26.60.05 与 LeviLamina 26.60.7 或 26.60.8 的 Windows 客户端'
+if ($instanceInfo.gameVersion -ne '1.26.60.05' -or $loaderInfo.version -notin @('26.60.7','26.60.8','26.60.9')) {
+    throw '适用 Minecraft 1.26.60.05 与 LeviLamina 26.60.7、26.60.8 或 26.60.9 的 Windows 客户端'
 }
 if (Get-Process -Name 'Minecraft.Windows' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $game }) {
     throw '请先正常退出这个游戏实例'

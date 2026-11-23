@@ -451,7 +451,11 @@ bool NativeRenderBindings::bind(RenderParams& params, NativeTextureSet const& te
             impl->parts.push_back(controller);
     }
     if (!prepared && texture) impl->models.push_back(model);
-    return firstPersonDepth != 0;
+    // A player-shadow submission can be nested inside renderFirstPerson.
+    // Its skeleton is sampled in world space, even while the HUD hand is active.
+    auto shadow = params.mShadowContext;
+    return FirstPersonRenderScope::isActive() && shadow != ShadowContext::ShadowOnly
+        && shadow != ShadowContext::PlayerShadowMapOnly;
 }
 Json NativeRenderBindings::report(RenderParams& params) const {
     Json result = {{"hand_visibility_bindings", impl->visibility.size()}, {"original_texture_sizes", impl->originalTextureSizes}};

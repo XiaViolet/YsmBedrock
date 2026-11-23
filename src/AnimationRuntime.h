@@ -66,6 +66,7 @@ public:
     void setRenderTexture(NativeTextureSet texture, std::string const& name);
     void trackSeats(std::weak_ptr<class NativeReplacedResources> source);
     void prepareForRender(Player& player, AnimationComponent& component);
+    void capturePreHandAngles(Player const& owner, float alpha);
     void reportFirstPersonPass(bool rendered);
     void prepareGeometry(RenderController& controller, std::shared_ptr<DataDrivenGeometry> const& geometry, RenderParams& params);
     std::span<BoneVisual const> boneVisuals(SkinnedMesh const& mesh, RenderController const* controller,
