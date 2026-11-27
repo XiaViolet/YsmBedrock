@@ -23,7 +23,19 @@ jobs:
         shell: pwsh
         run: |
           $env:PATH = "C:\Program Files\xmake;C:\ProgramData\chocolatey\bin;$env:PATH"
-          ./tools/build.ps1
+          New-Item -ItemType Directory -Force C:\x,C:\c,C:\p | Out-Null
+          $env:XMAKE_GLOBALDIR = 'C:\x'
+          $env:XMAKE_PKG_CACHEDIR = 'C:\c'
+          $env:XMAKE_PKG_INSTALLDIR = 'C:\p'
+          $env:XMAKE_COLORTERM = 'nocolor'
+          git config --global core.longpaths true
+          try { ./tools/build.ps1 } catch {
+            Get-ChildItem C:\c -Recurse -Filter install.txt -ErrorAction SilentlyContinue | Where-Object FullName -like '*installdir.failed*' | ForEach-Object {
+              Write-Host $_.FullName
+              Get-Content -LiteralPath $_.FullName -Tail 60
+            }
+            throw
+          }
       - name: Assemble and validate a private test package
         shell: pwsh
         run: |
