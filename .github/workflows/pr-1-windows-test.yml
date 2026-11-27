@@ -22,12 +22,13 @@ jobs:
       - name: Compile Windows x64
         shell: pwsh
         run: |
-          $env:PATH = "C:\ProgramData\chocolatey\bin;$env:PATH"
+          $env:PATH = "C:\Program Files\xmake;C:\ProgramData\chocolatey\bin;$env:PATH"
           ./tools/build.ps1
       - name: Assemble and validate a private test package
         shell: pwsh
         run: |
           Invoke-WebRequest -Uri 'https://github.com/XiaViolet/YsmBedrock/releases/download/v0.29.44/YsmBedrock-0.29.44.mcmod' -OutFile (Join-Path $env:RUNNER_TEMP 'base.mcmod')
+          if ((Get-FileHash (Join-Path $env:RUNNER_TEMP 'base.mcmod') -Algorithm SHA256).Hash -ne 'f4a1855d5b04b9499527527ac215436502c465f6dc23bf613c549cc77c80ac1f') { throw 'Official release asset digest mismatch' }
           ./tools/package-localized.ps1 -BaseMod (Join-Path $env:RUNNER_TEMP 'base.mcmod') -OutputDirectory test-output
           $mod = Get-ChildItem test-output -Filter '*.mcmod'
           $zip = [IO.Compression.ZipFile]::OpenRead($mod.FullName)
