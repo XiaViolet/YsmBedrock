@@ -29,13 +29,20 @@ jobs:
           $env:XMAKE_PKG_INSTALLDIR = 'C:\p'
           $env:XMAKE_COLORTERM = 'nocolor'
           git config --global core.longpaths true
+          $recipe = 'packages/libavif.lua'
+          $original = [IO.File]::ReadAllText($recipe)
+          $sourceUrl = 'https://codeload.github.com/AOMediaCodec/libavif/tar.gz/refs/tags/v$(version)'
+          $archiveUrl = 'https://github.com/AOMediaCodec/libavif/archive/refs/tags/v$(version).tar.gz'
+          if (!$original.Contains($sourceUrl)) { throw 'Unexpected libavif recipe' }
+          [IO.File]::WriteAllText($recipe, $original.Replace($sourceUrl, $archiveUrl))
           try { ./tools/build.ps1 } catch {
             Get-ChildItem C:\c -Recurse -Filter install.txt -ErrorAction SilentlyContinue | Where-Object FullName -like '*installdir.failed*' | ForEach-Object {
               Write-Host $_.FullName
               Get-Content -LiteralPath $_.FullName -Tail 60
             }
+            Get-ChildItem C:\c -Recurse -Filter merge_static_libs.cmake -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
             throw
-          }
+          } finally { [IO.File]::WriteAllText($recipe, $original) }
       - name: Assemble and validate a private test package
         shell: pwsh
         run: |
