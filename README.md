@@ -22,7 +22,7 @@ YsmBedrock is an unofficial Windows client port of [Yes Steve Model](https://git
 - Import supported `.ysm` files, model ZIP archives, and model folders. The public installers include Wine Fox and Magical Wine Fox.
 - Preview and equip models, switch textures, manage favorites, and adjust model settings. Play custom actions from the emote wheel.
 - Sync models and appearances in friend rooms with the host's permission. Use the same YsmBedrock version on both sides.
-- The development branch adds English and Chinese interfaces that follow Minecraft's language. It falls back to English for other languages uses author-provided translations where available, and includes translations for common model and emote labels. Some custom labels may still appear in their original language.
+- The development branch adds English and Chinese interfaces that follow Minecraft's language. The interface falls back to English for other game languages. Model text uses author-provided translations where available, with built-in translations for common model and emote labels. Some custom labels may still appear in their original language.
 - The development branch also adds four menu themes (Midnight, Light, Forest, and Violet), sharper icons and text, cached UI layouts, and asynchronous model previews with adjustable quality and a frame-rate limit up to 60 FPS.
 
 ### Installation and usage
@@ -77,7 +77,7 @@ YsmBedrock 是 [Yes Steve Model](https://github.com/YesSteveModel/YesSteveModel)
 - 导入受支持的 `.ysm`、模型 ZIP 或模型文件夹。公开安装包内置酒狐和魔法酒狐。
 - 预览和穿戴模型、切换贴图、管理收藏并调整模型设置。通过动作转盘播放自定义动作。
 - 获得房主许可后，可以在好友房间同步模型和外观。联机双方请使用同一版 YsmBedrock。
-- 开发分支新增中英文界面，跟随 Minecraft 的语言设置。其他语言默认使用英文，会使用模型作者提供的翻译，并为常见的模型和动作标签提供译文。部分自定义标签可能仍显示原文。
+- 开发分支新增中英文界面，跟随 Minecraft 的语言设置。其他游戏语言下，界面默认使用英文。模型文本优先采用作者提供的翻译，常见的模型和动作标签有内置译文。部分自定义标签可能仍显示原文。
 - 开发分支还新增四套菜单主题（深蓝、浅色、森林和紫罗兰）、更清晰的图标和文字、界面布局缓存，以及可调画质、最高可设为 60 FPS 的异步模型预览。
 
 ### 安装与使用
