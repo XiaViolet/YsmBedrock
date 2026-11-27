@@ -1,4 +1,5 @@
 #include "Localization.h"
+#include "UiTheme.h"
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -32,5 +33,21 @@ int main() {
     assert(displayLabel("en_us","未翻译的作者原文")=="未翻译的作者原文");
     assert(displayLabel("fr_fr","Bonjour")=="Bonjour");
     assert(readableAnimationId("animation.player.happyDance")=="Player Happy Dance");
-    std::cout << "Localization regression passed (22 checks)\n";
+    assert(displayLabel("en_us","§a切换表情")=="Change Expression");
+    assert(displayLabel("en_us","头发颜色")=="Hair Color");
+    assert(displayLabel("en_us","水手服")=="Sailor Uniform");
+    assert(displayLabel("en_us","盤腿坐") == "盤腿坐");
+    assert(displayLabel("en_us","隐藏全部")=="Hide All");
+    assert(displayLabel("en_us","未翻译的作者原文")=="未翻译的作者原文");
+    assert(displayEmote("en_us","盘腿坐","extra6")=="Sit Cross-Legged");
+    assert(displayLabel("zh_cn","头发颜色")=="头发颜色");
+    for(int i=0;i<4;++i){
+        auto const& t=uiTheme(i);
+        assert(themeColor(0xff243e37,t)==t.ink);
+        assert(themeColor(0xfffefefe,t)==t.onAccent);
+        assert(themeColor(0x80ffffff,t)==(0x80000000u|(t.card&0xffffffu)));
+        assert(t.card!=t.ink && t.panel!=t.accent);
+    }
+    assert(previewLimit(0)==320 && previewLimit(1)==512 && previewLimit(2)==768);
+    std::cout << "Localization and theme regression passed\n";
 }

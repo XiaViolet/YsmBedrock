@@ -540,7 +540,10 @@ Json modelLanguage(Json const& languages, std::string_view locale) {
     auto normalized = modelLocale(std::string(locale));
     merge("zh_tw");
     merge("zh_cn");
+    merge("en");
+    merge("en_gb");
     merge("en_us");
+    if(normalized.starts_with("zh")) merge(normalized=="zh_tw"||normalized=="zh_hk"?"zh_tw":"zh_cn");
     merge(normalized);
     return result;
 }

@@ -32,7 +32,7 @@ struct UiRect {
     float x = 0, y = 0, w = 0, h = 0;
     bool contains(float px, float py) const { return px >= x && py >= y && px < x+w && py < y+h; }
 };
-struct UiPaint { UiRect rect; std::uint32_t color; std::string text; float scale = 1; bool centered = false; float radius = 0; int wheelSector = -1; bool line = false; float endX = 0, endY = 0; };
+struct UiPaint { UiRect rect; std::uint32_t color; std::string text; float scale = 1; bool centered = false; float radius = 0; int wheelSector = -1; bool line = false; float endX = 0, endY = 0; bool rawColor = false; };
 struct UiCommand { std::string kind, key; double value = 0; int label = -1; std::uint64_t generation = 0; };
 struct LibraryPreview {
     std::string source, name, animation;
@@ -54,7 +54,8 @@ struct UiSnapshot {
     bool operator==(UiSnapshot const&) const = default;
 };
 struct UiScene {
-    std::vector<UiPaint> paint;
+    std::vector<UiPaint> paint, cursor;
+    std::uint64_t revision = 0;
     std::optional<UiRect> preview;
     PreviewCamera previewCamera;
     std::string previewClip;
@@ -64,7 +65,7 @@ struct UiScene {
  
 class YsmUi {
 public:
-    enum class Page { Closed, Models, Textures, Info, Settings, Preview, Roulette, Forms, Players, Import };
+    enum class Page { Closed, Models, Textures, Info, Settings, Preview, Roulette, Forms, Players, Import, Appearance };
 private:
     struct Hit { UiRect rect; std::string id; };
     struct Range { UiRect rect; std::string id, route; double min, max, step; bool setting; };
@@ -90,6 +91,8 @@ private:
     UiRect wheelBounds;
     int wheelHovered = -1;
     bool sceneDirty = true;
+    std::uint64_t sceneRevision = 0;
+    float cursorX = -2, cursorY = -2;
     float cachedWidth = 0, cachedHeight = 0, cachedHotbar = 0;
     UiScene cachedScene;
     UiScene buildScene(float width, float height, float hotbarTop);

@@ -13,6 +13,7 @@
 #include "UiMesh.h"
 #include "UiMouseCapture.h"
 #include "UiTextAtlas.h"
+#include "UiTheme.h"
 #include "mc/client/game/IClientInstance.h"
 #include "mc/client/gui/GuiData.h"
 #include "mc/client/gui/ScreenSizeData.h"
@@ -65,6 +66,11 @@ struct ClientPointer { UiPoint position; float width,height; };
 HWND foregroundClientWindow() {
     HWND window=GetForegroundWindow();DWORD process=0;GetWindowThreadProcessId(window,&process);
     return process==GetCurrentProcessId()?window:nullptr;
+}
+bool desktopCursorVisible() {
+    CURSORINFO cursor{};
+    cursor.cbSize = sizeof(cursor);
+    return !GetCursorInfo(&cursor) || ((cursor.flags & CURSOR_SHOWING) != 0 && (cursor.flags & CURSOR_SUPPRESSED) == 0);
 }
 bool isTouchMessage() {
     INPUT_MESSAGE_SOURCE source{};
@@ -122,6 +128,10 @@ struct NativeYsmUi::Impl {
     std::uint64_t meshRevision = 0, previewGeneration = 0;
     unsigned lastPixels = 0;
     PortraitCadence menuCadence;
+    int previewQuality=1;
+    std::uint64_t lastSceneRevision=0;
+    float lastTextDensity=0;
+    bool lastHudScene=true;
     bool nativeEnabled = true, lastNative = false;
     std::string nativeFailure;
     std::weak_ptr<ModelPreview const> failedRenderer;
@@ -257,6 +267,8 @@ std::optional<std::uint64_t> NativeYsmUi::updateHud(bool enabled, bool debugOver
     if (native != impl->nativeEnabled) { impl->failedRenderer.reset(); impl->nativeFailure.clear(); }
     impl->nativeEnabled = native;
     impl->portraitCadence.rate(settings.value("hud_fps",60));
+    impl->menuCadence.rate(settings.value("preview_fps",60));
+    impl->previewQuality=std::clamp(settings.value("preview_quality",1),0,2);
     impl->portrait = portrait;
     impl->debugOverlay = debugOverlay;
     bool forceRelative = settings.value("relative_menu_pointer", false);
@@ -315,7 +327,7 @@ void NativeYsmUi::close(IClientInstance* client){bool restore;{std::scoped_lock 
 void NativeYsmUi::diagnostics(std::filesystem::path const& directory, bool debug) {
     std::scoped_lock lock(impl->mutex);
     impl->diagnostics = debug ? directory/"ui-input-status.json" : std::filesystem::path{};
-    impl->touchDiagnostics = directory/"ui-touch-status.json";
+    impl->touchDiagnostics = debug ? directory/"ui-touch-status.json" : std::filesystem::path{};
     if (debug || std::filesystem::exists(directory/"mouse-diagnostics.enable"))
         impl->mouseDiagnostics = directory/"ui-mouse-status.json";
     else impl->mouseDiagnostics.clear();
@@ -324,6 +336,10 @@ bool NativeYsmUi::isOpen()const{std::scoped_lock lock(impl->mutex);return impl->
 bool NativeYsmUi::showsModels() const {
     std::scoped_lock lock(impl->mutex);
     return impl->ui.currentPage() == YsmUi::Page::Models;
+}
+bool NativeYsmUi::showsForms() const {
+    std::scoped_lock lock(impl->mutex);
+    return impl->ui.currentPage() == YsmUi::Page::Forms;
 }
 bool NativeYsmUi::suppressMouseCapture(IClientInstance const& client){return impl->mouseCapture.suppress(&client);}
 void NativeYsmUi::maintainMouse(IClientInstance& client) {
@@ -424,6 +440,8 @@ void NativeYsmUi::render(MinecraftUIRenderContext& context, AnimationRuntime con
     auto gui=client.getGuiData();auto const& size=*gui->mScreenSizeData;
     impl->width=size.clientUIScreenSize->x;impl->height=size.clientUIScreenSize->y;
     if(!std::isfinite(impl->width)||!std::isfinite(impl->height)||impl->width<=0||impl->height<=0)return;
+    auto rawDensity=std::min(size.clientScreenSize->x/impl->width,size.clientScreenSize->y/impl->height);
+    if(std::isfinite(rawDensity)&&rawDensity>0)impl->textDensity=std::clamp(rawDensity,.5f,12.f);
     if(!hudOnly) {
         auto window = foregroundClientWindow();
         if (impl->touchWindow && window != impl->touchWindow) {
@@ -434,7 +452,7 @@ void NativeYsmUi::render(MinecraftUIRenderContext& context, AnimationRuntime con
             impl->touchWindow = nullptr;
         }
         if (auto position=clientPointer(window)) {
-            impl->textDensity=std::min(position->width/impl->width,position->height/impl->height);
+
             if (!impl->mouseDiagnostics.empty())
                 impl->mouseTrace.observe(impl->mouseTrace.desktop,impl->mouseTrace.desktopChanges,position->position);
             if (!impl->pointer.usesTouch())
@@ -456,15 +474,16 @@ void NativeYsmUi::render(MinecraftUIRenderContext& context, AnimationRuntime con
                 {"game_button_events",trace.buttons}}.dump(2);
         }
     }
-    UiScene scene;
+    UiScene transientScene;
+    UiScene const* activeScene=&transientScene;
     if (portraitOnly) {
         auto side = std::min(impl->width, impl->height) * (.08f + .30f * impl->portraitSize);
-        scene.preview = UiRect{(impl->width - side) * impl->portraitX, (impl->height - side) * impl->portraitY, side, side};
-        scene.previewCamera = PreviewCamera{impl->portraitYaw, 0};
-        scene.animatePreview = true;
+        transientScene.preview = UiRect{(impl->width - side) * impl->portraitX, (impl->height - side) * impl->portraitY, side, side};
+        transientScene.previewCamera = PreviewCamera{impl->portraitYaw, 0};
+        transientScene.animatePreview = true;
     } else if (!hudOnly) {
         auto const& bar = *gui->mHUDHotbarRectangle;
-        scene = impl->ui.draw(impl->width, impl->height, bar._y0);
+        impl->ui.draw(impl->width, impl->height, bar._y0);
         auto touches = NativeMenuTouch::take();
         impl->deliveredTouch |= deliverMenuTouches(touches,impl->ui,impl->pointer,impl->width,impl->height);
         impl->reportTouch();
@@ -472,32 +491,38 @@ void NativeYsmUi::render(MinecraftUIRenderContext& context, AnimationRuntime con
             auto restore = impl->closeUi();
             lock.unlock(); restoreMouse(&client,restore); return;
         }
-        if (!touches.empty()) scene = impl->ui.draw(impl->width,impl->height,bar._y0);
+        activeScene = &impl->ui.draw(impl->width,impl->height,bar._y0);
     }
     if (hudOnly && impl->debugOverlay) {
         auto lines = animation.debugLines();
         if (!lines.empty()) {
             float panelWidth = std::min(180.0f, std::max(0.0f, impl->width - 12));
-            scene.paint.push_back({{6,6,panelWidth,6 + 12.0f * lines.size()},0xdf15352d,{},1,false,4});
+            transientScene.paint.push_back({{6,6,panelWidth,6 + 12.0f * lines.size()},0xdf15352d,{},1,false,4});
             for (std::size_t row = 0; row < lines.size(); ++row)
-                scene.paint.push_back({{12,10 + 12.0f * row,panelWidth - 10,12},0xffe6f5eb,std::move(lines[row]),.88f});
+                transientScene.paint.push_back({{12,10 + 12.0f * row,panelWidth - 10,12},0xffe6f5eb,std::move(lines[row]),.88f});
         }
     }
+    auto const& scene=*activeScene;
+    bool sceneChanged=hudOnly || impl->lastHudScene || scene.revision!=impl->lastSceneRevision;
+    impl->lastHudScene=hudOnly;impl->lastSceneRevision=scene.revision;
     auto split=std::min(scene.overlayStart,scene.paint.size());
     auto mainPaint = std::span<UiPaint const>(scene.paint).first(split);
-    auto shapeKey = uiShapeKey(mainPaint);
+    auto shapeKey = sceneChanged ? uiShapeKey(mainPaint) : impl->shapeKey;
     if (shapeKey != impl->shapeKey) {
         impl->cachedMainMesh = buildUiMesh(mainPaint);
         impl->shapeKey = shapeKey;
     }
     auto const& mainMesh=impl->cachedMainMesh;
-    auto cursorMesh=buildUiMesh(std::span<UiPaint const>(scene.paint).subspan(split));
+    std::vector<UiVertex> cursorMesh;
+    if (!hudOnly && foregroundClientWindow() && impl->pointer.needsSoftwareCursor(desktopCursorVisible()))
+        cursorMesh=buildUiMesh(scene.cursor);
     context.saveCurrentClippingRectangle();context.setFullClippingRectangle();
     struct RestoreClip {MinecraftUIRenderContext& context;~RestoreClip(){context.restoreSavedClippingRectangle();}} restoreClip{context};
     ScreenContext& screen=context.mScreenContext;
     auto nativeDraws=drawMesh(screen,mainMesh);
     auto textPaint=std::span<UiPaint const>(scene.paint).first(split);
-    auto textKey=uiTextKey(textPaint,impl->textDensity);
+    auto textKey=(sceneChanged || impl->lastTextDensity!=impl->textDensity || !impl->textTexture) ? uiTextKey(textPaint,impl->textDensity) : impl->textKey;
+    impl->lastTextDensity=impl->textDensity;
     bool hasText = std::any_of(textPaint.begin(), textPaint.end(), [](auto const& paint){ return !paint.text.empty(); });
     if(hasText && (textKey!=impl->textKey||!impl->textTexture||impl->textGroup.lock()!=client.getTextureGroup())) {
         auto atlas=rasterizeUiText(textPaint,impl->textDensity,&impl->textMasks);auto group=client.getTextureGroup();
@@ -532,7 +557,7 @@ void NativeYsmUi::render(MinecraftUIRenderContext& context, AnimationRuntime con
         auto now = std::chrono::steady_clock::now();
         auto& cadence = portraitOnly ? impl->portraitCadence : impl->menuCadence;
         auto side = std::min(scene.preview->w, scene.preview->h);
-        auto pixels = static_cast<unsigned>(std::clamp(std::ceil(side * impl->textDensity / 32.f) * 32.f, 224.f, 512.f));
+        auto pixels = static_cast<unsigned>(std::clamp(std::ceil(side * impl->textDensity / 32.f) * 32.f, 224.f, static_cast<float>(previewLimit(impl->previewQuality))));
         if (!native) pixels = 0;
         bool changed = impl->lastRenderer.lock() != renderer || impl->lastClip != scene.previewClip ||
             impl->lastTextureIndex != textureIndex || impl->lastAnimatePreview != scene.animatePreview ||

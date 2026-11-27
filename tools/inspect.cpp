@@ -996,7 +996,7 @@ int wmain(int argc, wchar_t** argv) {
                     if(point) ui.mouse(e.value("button",0),e.value("value",0),point->x,point->y);
                 }
                 else if(op!="draw")throw std::runtime_error("Unknown UI event");
-                auto scene=ui.draw(input.value("width",640.f),input.value("height",360.f),input.value("hotbar_top",-1.f));auto commands=ysm::Json::array();
+                auto const& scene=ui.draw(input.value("width",640.f),input.value("height",360.f),input.value("hotbar_top",-1.f));auto commands=ysm::Json::array();
                 for(auto const& c:ui.takeCommands())commands.push_back({{"kind",c.kind},{"key",c.key},{"value",c.value},{"label",c.label},{"generation",c.generation}});
                 auto frame=ui.report();
                 frame["pointer_source"]=pointer.source();
@@ -1006,7 +1006,8 @@ int wmain(int argc, wchar_t** argv) {
                 frame["animate_preview"]=scene.animatePreview;
                 frame["commands"]=commands;frame["text"]=ysm::Json::array();
                 auto split=std::min(scene.overlayStart,scene.paint.size());auto paint=std::span<ysm::UiPaint const>(scene.paint);
-                auto main=ysm::buildUiMesh(paint.first(split)),cursor=ysm::buildUiMesh(paint.subspan(split));
+                auto main=ysm::buildUiMesh(paint.first(split)),cursor=ysm::buildUiMesh(scene.cursor);
+                frame["scene_revision"]=scene.revision;
                 frame["mesh_vertices"]=main.size()+cursor.size();frame["mesh_batches"]=ysm::uiMeshBatches(main.size())+ysm::uiMeshBatches(cursor.size());
                 for(auto const& p:scene.paint)if(!p.text.empty())frame["text"].push_back({{"text",p.text},{"x",p.rect.x},{"y",p.rect.y},{"w",p.rect.w},{"h",p.rect.h}});
                 if(input.value("paint",false)) {

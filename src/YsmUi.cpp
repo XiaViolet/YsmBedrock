@@ -133,10 +133,19 @@ std::set<std::string> ModelUiBindings::roamingFields() const {
 Json YsmUi::defaultSettings() { return {{"sound_volume",100},{"disable_self_model",false},{"disable_self_hands",false},
     {"disable_projectile_model",false},{"disable_vehicle_model",false},{"print_animation_roulette_msg",true},
     {"movement_lock",false},{"disable_other_models",false},{"show_hud_avatar",false},{"arke_extra_emissive_layer",false},{"native_menu_preview",true},{"relative_menu_pointer",false},
-    {"hud_fps",60},{"hud_x",12},{"hud_y",82},{"hud_size",40},{"hud_yaw",50},{"favorites",Json::array()},
+    {"menu_theme",0},{"preview_quality",1},{"preview_fps",60},{"hud_fps",60},{"hud_x",12},{"hud_y",82},{"hud_size",40},{"hud_yaw",50},{"favorites",Json::array()},
     {"hidden_players",Json::array()}}; }
 void YsmUi::update(UiSnapshot value) {
     if (value == data) return;
+    if (!sceneDirty && page!=Page::Players && page!=Page::Forms && page!=Page::Roulette &&
+        value.generation==data.generation && value.source==data.source && value.texture==data.texture &&
+        value.message==data.message && value.locale==data.locale && value.descriptor==data.descriptor &&
+        value.language==data.language && value.catalog==data.catalog && value.settings==data.settings &&
+        value.textures==data.textures && value.clips==data.clips && value.browsing==data.browsing &&
+        value.browseLoading==data.browseLoading && value.enabled==data.enabled && value.loading==data.loading &&
+        value.debugOverlay==data.debugOverlay) {
+        data.players=std::move(value.players);data.room=std::move(value.room);data.values=std::move(value.values);return;
+    }
     sceneDirty = true;
     if(value.generation!=data.generation || value.source!=data.source) {
         categories={{"",0}};formButton.clear();formPage=texturePage=previewPage=infoPage=0;previewClip.clear();
@@ -191,6 +200,7 @@ void YsmUi::back() {
     searchFocused=false;hits.clear(); ranges.clear(); dragging.reset(); focusId.clear();
     previewArea.reset(); previewDrag.reset();
     if(page==Page::Forms){page=Page::Roulette;return;}
+    if(page==Page::Appearance){page=Page::Settings;return;}
     if(page==Page::Roulette && categories.size()>1){categories.pop_back();return;}
     if(page!=Page::Models && page!=Page::Roulette){page=Page::Models;return;}
     close();
@@ -203,6 +213,12 @@ void YsmUi::activate(std::string const& id) {
     if(id=="close"){close();return;}if(id=="back"){back();return;}
     if(id=="models"){page=Page::Models;return;}if(id=="textures"){page=Page::Textures;return;}
     if(id=="info"){page=Page::Info;return;}if(id=="settings"){page=Page::Settings;return;}
+    if(id=="appearance"){page=Page::Appearance;return;}
+    if(id.starts_with("theme:") || id.starts_with("quality:")) {
+        bool theme=id.starts_with("theme:"); auto key=theme?"menu_theme":"preview_quality";
+        auto value=std::clamp(std::stoi(id.substr(theme?6:8)),0,theme?3:2);
+        data.settings[key]=value;command("setting",key,value);return;
+    }
     if(id=="players"){page=Page::Players;return;}
     if(id=="preview"){page=Page::Preview;return;}if(id=="roulette"){page=Page::Roulette;return;}
     if(id=="favorite_filter"){favoritesOnly=!favoritesOnly;listPage=0;return;}
@@ -295,7 +311,12 @@ void YsmUi::cancelPointer() {
 bool YsmUi::mouse(int button,int value,float x,float y) {
     if(!isOpen())return false;
     if (button == 0 && x == mouseX && y == mouseY && !dragging && !previewDrag) return true;
-    sceneDirty = true;mouseX=x;mouseY=y;
+    if (button != 0 || dragging || previewDrag) sceneDirty = true;
+    else {
+        if (isWheel() && wheelSlotAt(wheelBounds,x,y)!=wheelHovered) sceneDirty=true;
+        if (!sceneDirty) for(auto const& hit:hits) if(hit.rect.contains(x,y)!=hit.rect.contains(mouseX,mouseY)){sceneDirty=true;break;}
+    }
+    mouseX=x;mouseY=y;
     if (previewDrag && (button == 0 || button == previewDrag->button)) {
         auto& drag = *previewDrag;
         auto dx = x - drag.x, dy = y - drag.y;
@@ -346,7 +367,9 @@ bool YsmUi::mouse(int button,int value,float x,float y) {
 void YsmUi::setRange(Range const& range,double value) {
     value=std::clamp(value,range.min,range.max);
     if(range.step>0)value=std::clamp(range.min+std::round((value-range.min)/range.step)*range.step,range.min,range.max);
-    if(range.setting)data.settings[range.route]=value;else data.values[range.route]=value;
+    auto& target=range.setting?data.settings:data.values;
+    if(target.contains(range.route) && target.value(range.route,0.)==value)return;
+    target[range.route]=value;
     command(range.setting?"setting":"form",range.route,value);
 }
 std::vector<UiCommand> YsmUi::takeCommands() {std::vector<UiCommand> out(commands.begin(),commands.end());commands.clear();return out;}

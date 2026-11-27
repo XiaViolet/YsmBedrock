@@ -168,6 +168,7 @@ class Mod {
     KeyBindings keys;
     NativeYsmUi ui;
     Json uiSettings = YsmUi::defaultSettings();
+    std::optional<std::chrono::steady_clock::time_point> settingsSaveAt;
     bool debugOverlay = false;
     std::atomic<bool> arkeShaderEnabled{false};
     std::chrono::steady_clock::time_point nextArkeCheck{};
@@ -262,6 +263,8 @@ public:
                 for (auto const& [key, value] : uiSettings.items()) if (input.contains(key)) {
                     auto const& saved = input.at(key);
                     if (value.is_boolean() && saved.is_boolean()) uiSettings[key] = saved;
+                    else if ((key=="menu_theme" || key=="preview_quality" || key=="preview_fps") && saved.is_number_integer())
+                        uiSettings[key]=std::clamp(saved.get<int>(),key=="preview_fps"?15:0,key=="menu_theme"?3:key=="preview_quality"?2:60);
                     else if (key=="hud_fps" && saved.is_number_integer()) uiSettings[key]=static_cast<int>(std::clamp(saved.get<double>(),5.,60.));
                     else if ((key == "sound_volume" || key.starts_with("hud_")) && saved.is_number_integer())
                         uiSettings[key] = static_cast<int>(std::clamp(saved.get<double>(), 0.0, 100.0));
@@ -355,6 +358,7 @@ public:
         std::ofstream(self->getModDir() / "runtime-status.json") << Json{{"stage", stage}}.dump(2);
     }
     void saveUiSettings() {
+        settingsSaveAt.reset();
         try {
             auto path = self->getModDir() / "ui-settings.json", temporary = self->getModDir() / "ui-settings.json.tmp";
             { std::ofstream out(temporary, std::ios::binary | std::ios::trunc); out << uiSettings.dump(2); out.close(); if (!out) throw std::runtime_error("Cannot save UI settings"); }
@@ -477,7 +481,7 @@ public:
             for (auto const& texture : pack->textures) snapshot.textures.push_back(texture.name);
             for (auto const& [group, document] : pack->animations.items()) if (group != "fp_arm")
                 for (auto const& [name, clip] : document.at("animations").items()) snapshot.clips.push_back(name);
-            snapshot.values = animation.modelUiValues();
+            if (ui.showsForms()) snapshot.values = animation.modelUiValues();
         }
         ui.updateMenu(client, *session, std::move(snapshot), browseRenderer);
     }
@@ -538,6 +542,8 @@ public:
                     saveUiSettings();
                 } else if (c.kind == "setting" && uiSettings.contains(c.key) && !uiSettings.at(c.key).is_array()) {
                     if (c.key == "sound_volume") uiSettings[c.key] = std::clamp(static_cast<int>(c.value), 0, 100);
+                    else if (c.key=="menu_theme" || c.key=="preview_quality" || c.key=="preview_fps")
+                        uiSettings[c.key]=std::clamp(static_cast<int>(c.value),c.key=="preview_fps"?15:0,c.key=="menu_theme"?3:c.key=="preview_quality"?2:60);
                     else if (c.key=="hud_fps") uiSettings[c.key]=std::clamp(static_cast<int>(c.value),5,60);
                     else if (c.key.starts_with("hud_")) uiSettings[c.key] = std::clamp(static_cast<int>(c.value), 0, 100);
                     else uiSettings[c.key] = c.value != 0;
@@ -552,7 +558,8 @@ public:
                     if (c.key == "disable_other_models")
                         relay.setVisibility(uiSettings.at(c.key).get<bool>(), uiSettings.at("hidden_players"));
                     targetResources.presentation(!uiSettings.value("disable_vehicle_model", false), !uiSettings.value("disable_projectile_model", false));
-                    saveUiSettings();
+                    if (uiSettings.at(c.key).is_number()) settingsSaveAt=std::chrono::steady_clock::now()+std::chrono::milliseconds(300);
+                    else saveUiSettings();
                 } else if (c.kind == "link" && c.key.size() < 2048 && (c.key.starts_with("https://") || c.key.starts_with("http://"))) {
                      
                     auto wide = std::filesystem::path(std::u8string(c.key.begin(), c.key.end())).wstring();
@@ -998,6 +1005,7 @@ public:
         }
     }
     void tick(IClientInstance& client) {
+        if(settingsSaveAt && std::chrono::steady_clock::now()>=*settingsSaveAt)saveUiSettings();
         setGameLanguage(client.getOptions().getLanguage());
         auto* player = client.getLocalPlayer();
         if (!player) {
@@ -1298,6 +1306,7 @@ public:
         }
     }
     bool disable() {
+        if(settingsSaveAt)saveUiSettings();
         if (auto client = ll::service::getClientInstance()) ui.close(&*client);
         NativeMenuTouch::shutdown();
         if (mouseListener) ll::event::EventBus::getInstance().removeListener(mouseListener);

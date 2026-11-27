@@ -28,7 +28,39 @@ inline bool hasHan(std::string_view text) {
 }
 inline std::string englishModelLabel(std::string_view label) {
     if (!hasHan(label)) return std::string(label);
+    std::string clean;
+    for(std::size_t i=0;i<label.size();) {
+        if(label.substr(i).starts_with("§") && i+2<label.size() && static_cast<unsigned char>(label[i+2])<128){i+=3;continue;}
+        clean+=label[i++];
+    }
+    label=clean;
     static constexpr std::pair<std::string_view,std::string_view> words[] = {
+        {"切换表情","Change Expression"},{"切换发型","Change Hairstyle"},{"切换颜色","Change Color"},{"点击切换","Click to switch"},
+        {"点击播放","Click to play"},{"点击开启","Click to enable"},{"点击关闭","Click to disable"},{"是否显示","Show"},
+        {"默认服装","Default Outfit"},{"原版皮肤","Vanilla Skin"},{"随机动作","Random Emote"},{"随机表情","Random Expression"},
+        {"头发颜色","Hair Color"},{"眼睛颜色","Eye Color"},{"头发样式","Hairstyle"},{"衣服颜色","Outfit Color"},
+        {"特殊表情","Special Expressions"},{"普通表情","Normal Expressions"},{"脸部表情","Facial Expressions"},{"表情管理","Expressions"},
+        {"脸部","Face"},{"眉毛","Eyebrows"},{"睫毛","Eyelashes"},{"眼泪","Tears"},{"汗水","Sweat"},{"腮红","Blush"},
+        {"瞳孔","Pupils"},{"刘海","Bangs"},{"双马尾","Twin Tails"},{"单马尾","Ponytail"},{"马尾","Ponytail"},
+        {"蝴蝶结","Bow"},{"发卡","Hair Clip"},{"发夹","Hair Clip"},{"耳机","Headphones"},{"耳环","Earrings"},
+        {"水手服","Sailor Uniform"},{"校服","School Uniform"},{"女仆装","Maid Outfit"},{"睡衣","Pajamas"},{"泳衣","Swimsuit"},
+        {"夏装","Summer Outfit"},{"冬装","Winter Outfit"},{"礼服","Formal Outfit"},{"外套","Jacket"},{"上衣","Top"},
+        {"裤子","Pants"},{"短裤","Shorts"},{"丝袜","Stockings"},{"长袜","Long Socks"},{"靴子","Boots"},{"领带","Tie"},
+        {"魔法棒","Magic Wand"},{"法杖","Staff"},{"雨伞","Umbrella"},{"扇子","Fan"},{"麦克风","Microphone"},{"吉他","Guitar"},
+        {"跑酷","Parkour"},{"鼓励","Encourage"},{"撒娇","Act Cute"},{"卖萌","Act Cute"},{"叹气","Sigh"},{"鼓脸","Pout"},
+        {"托腮","Rest Chin"},{"摇尾巴","Wag Tail"},{"摆手","Wave"},{"牵手","Hold Hands"},{"扶额","Facepalm"},
+        {"双手叉腰","Hands on Hips"},{"伸手","Reach Out"},{"举高高","Lift Up"},{"仰卧","Lie on Back"},{"侧卧","Lie on Side"},
+        {"盘腿坐","Sit Cross-Legged"},{"盘腿","Cross-Legged"},{"踢腿","Kick"},{"拉伸","Stretch"},{"原地转圈","Spin in Place"},
+        {"连续播放","Loop"},{"循环播放","Loop"},{"播放一次","Play Once"},{"暂停","Pause"},{"继续","Resume"},{"播放","Play"},
+        {"互动","Interaction"},{"互动动作","Interactions"},{"快捷动作","Quick Emotes"},{"特殊","Special"},{"休息","Rest"},
+        {"动作速度","Animation Speed"},{"模型大小","Model Size"},{"模型高度","Model Height"},{"音效音量","Sound Volume"},
+        {"强度","Intensity"},{"亮度","Brightness"},{"透明","Transparent"},{"不透明","Opaque"},{"隐藏全部","Hide All"},
+        {"显示全部","Show All"},{"不显示","Hide"},{"无","None"},{"有","Yes"},{"是","Yes"},{"否","No"},
+        {"开启后","When enabled"},{"关闭后","When disabled"},{"长按","Hold"},{"按下","Press"},{"点击","Click"},
+        {"哔哩哔哩","Bilibili"},{"官方网站","Official Website"},{"下载地址","Download"},{"交流群","Community Group"},
+        {"連結","Link"},{"链接","Link"},{"视频","Video"},{"展示","Showcase"},{"教程","Tutorial"},
+        {"頭髮","Hair"},{"衣裝","Outfit"},{"換裝","Change Outfit"},{"換髮型","Change Hairstyle"},{"臉紅","Blush"},
+        {"跳躍","Jump"},{"跳舞","Dance"},{"坐下","Sit"},{"躺下","Lie Down"},{"預設","Default"},{"關閉","Off"},
         {"返回上一级","Back"},{"返回","Back"},{"动作转盘","Emote Wheel"},{"额外动作","Emotes"},{"特殊动作","Special Emotes"},
         {"动作设置","Emote Settings"},{"外观设置","Appearance Settings"},{"模型设置","Model Settings"},{"装饰设置","Accessory Settings"},
         {"表情设置","Expression Settings"},{"服装切换","Change Outfit"},{"切换服装","Change Outfit"},{"切换皮肤","Change Skin"},
@@ -95,6 +127,7 @@ inline std::string englishModelLabel(std::string_view label) {
         }
     }
     if(hasHan(result)) return std::string(label);
+    while(!result.empty() && result.back()==' ')result.pop_back();
     return result;
 }
 inline std::string readableAnimationId(std::string_view id) {

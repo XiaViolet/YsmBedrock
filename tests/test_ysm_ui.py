@@ -194,7 +194,7 @@ class UiTests(unittest.TestCase):
         settings=self.click([dict(op='open')],'本地设置',**data)
         frame=self.session(settings,**data)[-1]
         hint=next(t for t in frame['text'] if t['text']=='纸娃娃帧率  60')
-        track=next(p for p in frame['paint'] if p['color']==0xffe0e7df and p['w']>100
+        track=next(p for p in frame['paint'] if p['color']==0xff344052 and p['w']>100
                    and p['x']>hint['x'] and abs(p['y']-hint['y'])<12)
         for fraction,rate in ((0,5),(10/55,15),(25/55,30),(.999,60)):
             clicked=dict(op='mouse',button=1,value=1,x=track['x']+fraction*track['w'],y=track['y']+1)
@@ -426,7 +426,7 @@ class UiTests(unittest.TestCase):
                       dict(type='range',value='v.roaming.size',min=0,max=1,step=0)]}]}})
         events=[dict(op='open',wheel=True),dict(op='key',key=49)]
         frame=self.session(events,**data)[-1]
-        track=next(p for p in frame['paint'] if p['text']=='' and p['color']==0xffe0e7df and p['w']>150 and 2<p['h']<5)
+        track=next(p for p in frame['paint'] if p['text']=='' and p['color']==0xff344052 and p['w']>150 and 2<p['h']<5)
         events += [dict(op='mouse',button=1,value=1,x=track['x']+track['w']*.375,y=track['y']+1),
                    dict(op='mouse',button=0,x=track['x']+track['w']*.625,y=track['y']+1),
                    dict(op='mouse',button=1,value=0,x=track['x']+track['w']*.625,y=track['y']+1)]
@@ -434,6 +434,19 @@ class UiTests(unittest.TestCase):
         writes=[c for f in frames for c in f['commands'] if c['kind']=='form']
         self.assertEqual(writes[-1]['key'],'face/0')
         self.assertAlmostEqual(writes[-1]['value'],.625,places=5)
+
+    def test_theme_setting_and_cursor_only_motion(self):
+        data=dict(locale='en_us',width=960,height=540)
+        events=self.click([dict(op='open')],'Settings',**data)
+        events=self.click(events,'Appearance',**data)
+        frame=self.session(events,**data)[-1]
+        self.assertIn('Midnight',[label['text'] for label in frame['text']])
+        events=self.click(events,'Light',**data)
+        frame=self.session(events,**data)[-1]
+        self.assertEqual(frame['commands'][0]['key'],'menu_theme')
+        self.assertEqual(frame['commands'][0]['value'],1)
+        frames=self.session([dict(op='open'),dict(op='mouse',x=2,y=2),dict(op='mouse',x=3,y=3)],**data)
+        self.assertEqual(frames[-1]['scene_revision'],frames[-2]['scene_revision'])
 
     def test_typography_stays_inside_each_page_at_small_gui_sizes(self):
         for width,height in [(320,180),(640,360),(960,540),(480,640)]:

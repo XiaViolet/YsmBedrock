@@ -1,4 +1,5 @@
 #include "UiTextAtlas.h"
+#include "Localization.h"
 #include <Windows.h>
 #include <algorithm>
 #include <bit>
@@ -15,12 +16,12 @@ std::wstring wide(std::string const& text) {
 struct FontContext {
     HDC dc=CreateCompatibleDC(nullptr);
     HGDIOBJ originalFont=dc?GetCurrentObject(dc,OBJ_FONT):nullptr;
-    std::map<int,HFONT> fonts;
+    std::map<std::pair<int,int>,HFONT> fonts;
     ~FontContext(){if(dc&&originalFont)SelectObject(dc,originalFont);for(auto const& [n,font]:fonts)DeleteObject(font);if(dc)DeleteDC(dc);}
-    void font(int pixels) {
+    void font(int pixels,int style) {
         if(!dc)throw std::runtime_error("Cannot create UI font context");
-        auto [i,inserted]=fonts.try_emplace(pixels,nullptr);
-        if(inserted)i->second=CreateFontW(-pixels,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_TT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,DEFAULT_PITCH|FF_DONTCARE,L"Microsoft YaHei UI");
+        auto [i,inserted]=fonts.try_emplace(std::pair{pixels,style},nullptr);
+        if(inserted)i->second=CreateFontW(-pixels,0,0,0,(style&2)?FW_SEMIBOLD:FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_TT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,DEFAULT_PITCH|FF_DONTCARE,(style&1)?L"Microsoft YaHei UI":L"Segoe UI");
         if(!i->second)throw std::runtime_error("Cannot create smooth UI font");SelectObject(dc,i->second);
     }
 };
@@ -39,16 +40,17 @@ UiTextAtlas rasterizeUiText(std::span<UiPaint const> paint,float density,UiTextM
     for(auto const& p:paint) {
         if(p.text.empty()||p.rect.w<=0||!(p.color>>24))continue;
         if(labels.size()>=512)throw std::runtime_error("UI text label budget exceeded");
-        int pixels=std::clamp(static_cast<int>(std::round(p.scale*10*density)),8,128);
+        int pixels=std::clamp(static_cast<int>(std::round(p.scale*11*density)),8,128);
+        int style=(hasHan(p.text)?1:0)|(p.scale*10*density>=24?2:0);
         int maxWidth=std::clamp(static_cast<int>(std::ceil(p.rect.w*density)),1,atlasWidth-4);
-        int height=std::clamp(static_cast<int>(std::ceil(p.rect.h*density)),pixels+2,256);
-        UiTextMaskCache::Key key{p.text,pixels,maxWidth,height};
+        int height=std::clamp(static_cast<int>(std::ceil(p.rect.h*density)),pixels+4,256);
+        UiTextMaskCache::Key key{p.text,pixels,maxWidth,height,style};
         UiTextMaskCache::Mask local;
         UiTextMaskCache::Mask const* mask = nullptr;
         if(cache) if(auto found=cache->masks.find(key);found!=cache->masks.end()) mask=&found->second;
         if(!mask) {
             auto text=wide(p.text);if(text.empty())continue;
-            fonts.font(pixels);
+            fonts.font(pixels,style);
             SIZE extent{};if(!GetTextExtentPoint32W(fonts.dc,text.data(),static_cast<int>(text.size()),&extent))continue;
             int width=std::clamp(static_cast<int>(extent.cx+2),1,maxWidth);
             BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);info.bmiHeader.biWidth=width;info.bmiHeader.biHeight=-height;
@@ -64,7 +66,7 @@ UiTextAtlas rasterizeUiText(std::span<UiPaint const> paint,float density,UiTextM
             local.width=width;local.height=height;local.alpha.resize(static_cast<std::size_t>(width)*height);
             auto* source=static_cast<unsigned char const*>(bits);
             for(std::size_t i=0;i<local.alpha.size();++i) local.alpha[i]=std::max({source[i*4],source[i*4+1],source[i*4+2]});
-            constexpr std::size_t maxCacheBytes=8*1024*1024;
+            constexpr std::size_t maxCacheBytes=16*1024*1024;
             if(cache && local.alpha.size()+p.text.size()<=maxCacheBytes) {
                 auto bytes=local.alpha.size()+p.text.size();
                 if(cache->masks.size()>=1024 || cache->bytes+bytes>maxCacheBytes) cache->clear();
@@ -76,6 +78,8 @@ UiTextAtlas rasterizeUiText(std::span<UiPaint const> paint,float density,UiTextM
         Label label;label.width=mask->width;label.height=mask->height;
         label.source={p.rect.x,p.rect.y,mask->width/density,mask->height/density};
         if(p.centered)label.source.x+=(p.rect.w-label.source.w)/2;
+        label.source.x=std::round(label.source.x*density)/density;
+        label.source.y=std::round(label.source.y*density)/density;
         label.rgba.resize(mask->alpha.size()*4);
         for(std::size_t i=0;i<mask->alpha.size();++i){
             label.rgba[i*4]=static_cast<unsigned char>((p.color>>16)&255);label.rgba[i*4+1]=static_cast<unsigned char>((p.color>>8)&255);label.rgba[i*4+2]=static_cast<unsigned char>(p.color&255);

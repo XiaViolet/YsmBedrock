@@ -11,7 +11,7 @@ struct UiTextAtlas {
     float pixelDensity=1;
 };
 struct UiTextMaskCache {
-    using Key = std::tuple<std::string,int,int,int>;
+    using Key = std::tuple<std::string,int,int,int,int>;
     struct Mask { int width = 0, height = 0; std::vector<unsigned char> alpha; };
     std::map<Key,Mask> masks;
     std::size_t bytes = 0;

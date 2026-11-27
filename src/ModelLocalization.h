@@ -11,7 +11,14 @@ inline std::string textField(Json const& object, std::string_view key, std::stri
 inline std::string localizedModelText(Json const& language, std::string_view locale, std::string const& key, std::string fallback={}) {
     auto value=textField(language,key,std::move(fallback));
     if(key.starts_with("metadata.authors.") && key.ends_with(".name")) return value;
-    return displayLabel(locale,std::move(value));
+    auto translated=displayLabel(locale,value);
+    if(!chineseLocale(locale) && !locale.starts_with("ja") && !locale.starts_with("ko") && hasHan(translated) && key.starts_with("properties.extra_animation_buttons.") && key.ends_with(".name")) {
+        auto id=key.substr(sizeof("properties.extra_animation_buttons.")-1);
+        id.resize(id.size()-5);
+        auto readable=readableAnimationId(id);
+        if(!hasHan(readable) && !readable.empty() && readable.find_first_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")!=std::string::npos) return readable;
+    }
+    return translated;
 }
 inline std::string declaredEmoteName(Json const& descriptor, std::string const& id) {
     auto properties=descriptor.find("properties");
