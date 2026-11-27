@@ -1,3 +1,78 @@
+# YsmBedrock
+
+[English](#english) · [简体中文](#chinese)
+
+<a id="english"></a>
+
+## English
+
+YsmBedrock is an unofficial Windows client-side port of [Yes Steve Model](https://github.com/YesSteveModel/YesSteveModel) for Minecraft Bedrock Edition, built for [LeviLamina](https://github.com/LiteLDev/LeviLamina). It allows players to wear custom YSM models, change their appearance, and play custom emotes and animations.
+
+This modified version is based on upstream YsmBedrock **0.29.44** and adds English localization, improved rendering performance, sharper UI elements, customizable themes, and automatic mod packaging.
+
+![YsmBedrock gameplay](docs/images/gameplay.webp)
+
+### Requirements
+
+- Windows x64
+- Minecraft Bedrock Edition 1.26.60.05
+- LeviLamina 26.60.9 Client (upstream also supports 26.60.7 and 26.60.8)
+
+### Features
+
+- Import and equip supported `.ysm` files, model ZIP archives, and model folders.
+- Preview models, switch textures, manage favorites, and customize model settings.
+- Play custom animations and emotes using the emote wheel.
+- Synchronize models and appearances in friend rooms with the host's permission.
+- English and Chinese interfaces that automatically follow Minecraft's language setting. Other languages fall back to English.
+- Model-provided translations and offline English fallbacks for common model and emote labels. Custom author text without a translation may remain in its original language.
+- Four menu themes: Midnight, Light, Forest, and Violet.
+- Asynchronous model previews with configurable quality and frame rate up to 60 FPS, cached UI rendering, and reduced rendering overhead.
+- Sharper text and menu icons with resolution-aware rendering.
+
+### Installation and usage
+
+1. Install LeviLamina Client in the corresponding Minecraft instance.
+2. Import the built `.mcmod` through LeviLauncher's LeviLamina mod management page.
+3. Launch Minecraft and enter a world.
+4. Press `Alt+Y` to open the model library, select or import a model, and equip it.
+5. Press `Z` to open the emote wheel.
+
+### Build
+
+Install [xmake](https://xmake.io/), Visual Studio 2022 Build Tools with C++ and the Windows SDK, and LLVM (`clang-cl`). Open an x64 developer terminal in the project directory and run:
+
+```powershell
+xmake f -p windows -a x64 -m release -y
+xmake build -y YsmBedrock
+```
+
+With the automatic packaging changes and bundled assets installed, xmake generates the DLL and the importable mod archive:
+
+```text
+dist/YsmBedrock-0.29.44.mcmod
+```
+
+No original release ZIP or separate packaging command is required. The packaged legacy library supports older YSM v3 models.
+
+### Credits and documentation
+
+The original Bedrock port is maintained by [XiaViolet](https://github.com/XiaViolet/YsmBedrock), with most of the original port code written using OpenAI Codex. This modified version is not an official upstream release.
+
+- [Feature guide](docs/项目功能手册.md) · [Room synchronization](docs/0.29.19-房间模型同步.md) · [Relay configuration](docs/联机使用.md)
+- [Source](src/) · [Regression tests](tests/) · [Build and maintenance](docs/维护框架.md)
+- [Third-party notices](THIRD_PARTY_NOTICES.md) · [Licenses](licenses/) · [Wine Fox credits](licenses/wine-fox-source.json) · [Magical Wine Fox credits](licenses/magical-wine-fox-source.json)
+
+---
+
+<a id="chinese"></a>
+
+## 简体中文
+
+> 以下为上游项目原始中文 README，保留原文。文中的下载链接指向上游原版，而非本修改版。
+>
+> The following is the original upstream Chinese README. Its download links point to the upstream release, not this modified build.
+
 <h1 align="center">YsmBedrock</h1>
 
 <p align="center">

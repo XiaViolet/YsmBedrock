@@ -5,14 +5,14 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $instanceRoot = (Resolve-Path -LiteralPath $Instance).Path
 $game = Join-Path $instanceRoot 'Minecraft.Windows.exe'
-if (!(Test-Path -LiteralPath $game -PathType Leaf)) { throw '请选择含有 Minecraft.Windows.exe 的实例目录' }
+if (!(Test-Path -LiteralPath $game -PathType Leaf)) { throw 'Select the instance directory containing Minecraft.Windows.exe' }
 $instanceInfo = Get-Content -LiteralPath "$instanceRoot/.levilauncher/instance.json" -Raw -Encoding utf8 | ConvertFrom-Json
 $loaderInfo = Get-Content -LiteralPath "$instanceRoot/mods/LeviLamina/manifest.json" -Raw -Encoding utf8 | ConvertFrom-Json
 if ($instanceInfo.gameVersion -ne '1.26.60.05' -or $loaderInfo.version -notin @('26.60.7','26.60.8','26.60.9')) {
-    throw '适用 Minecraft 1.26.60.05 与 LeviLamina 26.60.7、26.60.8 或 26.60.9 的 Windows 客户端'
+    throw 'Requires Minecraft 1.26.60.05 and LeviLamina 26.60.7, 26.60.8 or 26.60.9 on Windows'
 }
 if (Get-Process -Name 'Minecraft.Windows' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $game }) {
-    throw '请先正常退出这个游戏实例'
+    throw 'Close the game instance first'
 }
 $destination = [IO.Path]::GetFullPath((Join-Path $instanceRoot 'mods/YsmBedrock'))
 $stage = Join-Path ([IO.Path]::GetTempPath()) ('ysm-install-' + [Guid]::NewGuid().ToString('N'))
@@ -56,7 +56,7 @@ try {
         $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $Package).Path)
         try {
             $manifests = @($zip.Entries | Where-Object FullName -cmatch '^(?:[^/]+/)?mods/YsmBedrock/manifest\.json$')
-            if ($manifests.Count -ne 1) { throw '请选择包含 mods/YsmBedrock 的工程 ZIP' }
+            if ($manifests.Count -ne 1) { throw 'Select an engineering ZIP containing mods/YsmBedrock' }
             $prefix = $manifests[0].FullName.Substring(0,$manifests[0].FullName.Length-'manifest.json'.Length)
             $total = 0L
             foreach ($entry in $zip.Entries) {
@@ -65,7 +65,7 @@ try {
                 if (!(Test-ManagedFile $name)) { continue }
                 $path = Get-TargetPath $payload $name
                 $total += $entry.Length
-                if ($total -gt 256MB) { throw '工程包的安装文件超过 256 MiB' }
+                if ($total -gt 256MB) { throw 'Installation files exceed 256 MiB' }
                 [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($path))
                 [IO.Compression.ZipFileExtensions]::ExtractToFile($entry,$path,$false)
             }
@@ -98,7 +98,7 @@ try {
     }
     $manifest = Get-Content -LiteralPath "$payload/manifest.json" -Raw -Encoding utf8 | ConvertFrom-Json
     if ($manifest.name -cne 'YsmBedrock' -or $manifest.entry -cne 'YsmBedrock.dll' -or $manifest.platform -cne 'client') {
-        throw '工程包的模组清单不匹配'
+        throw 'The package manifest does not match'
     }
     $expected = @{}
     foreach ($record in (Get-OfficialModels $payload)) {
@@ -116,7 +116,6 @@ try {
         Assert-NoLink $target
         $isModel = $name.StartsWith('models/',[StringComparison]::Ordinal)
         if ($isModel) {
-            # Keep a personal model with the same filename and reuse an identical prior installation.
             $index = 0
             $reuse = $false
             while (Test-Path -LiteralPath $target) {
@@ -163,7 +162,7 @@ try {
         throw $originalError
     }
     foreach ($item in $changed) { if ($item.Backup) { [IO.File]::Delete($item.Backup) } }
-    Write-Output "已安装 YsmBedrock $($manifest.version) 到 $destination。"
+    Write-Output "Installed YsmBedrock $($manifest.version) to $destination."
 } finally {
     if ((Test-Path -LiteralPath $stage) -and ([IO.Directory]::GetParent((Resolve-Path -LiteralPath $stage).Path).FullName -eq [IO.Path]::GetTempPath().TrimEnd('\','/'))) {
         Remove-Item -LiteralPath $stage -Recurse -Force

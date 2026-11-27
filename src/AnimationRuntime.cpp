@@ -1,3 +1,4 @@
+#include "Localization.h"
 #include "AnimationRuntime.h"
 #include "NativePoseLayout.h"
 #include "ExtraAction.h"
@@ -71,8 +72,8 @@
 #include <unordered_map>
 #include <Windows.h>
 
-// This SDK leaves the default constructor undefined. A local constant node is
-// sufficient for the base fields of our own animation player.
+ 
+ 
 ExpressionNode::ExpressionNode() : mImpl(std::in_place_type<float>, 0.0f) {}
 void ActorAnimationPlayer::buildBoneToPartMapping(AnimationComponent&) {}
 void ActorAnimationPlayer::bindParticleEffects(std::unordered_map<HashedString, HashedString> const&) {}
@@ -115,8 +116,8 @@ static Json nativeRenderStack() {
     }
     return result;
 }
-// These objects depend only on source contents. Each wearer constructs separate
-// controller clocks, Molang variables, physics and native render bindings.
+ 
+ 
 struct CompiledPlayerModel {
     AnimationSampler body, arm;
     HandAnimationController initialHands;
@@ -126,7 +127,7 @@ struct CompiledPlayerModel {
         : body(animations, pack.mainGeometry), arm(pack.firstPersonAnimations(), pack.armGeometry),
           initialHands(animations), geometry(ClientGeometry::build(pack)), skinGeometry(geometry.document.dump()) {}
 };
-// The hand renderer temporarily zeroes the local actor's world rotation.
+ 
 struct PlayerViewAngles {
     double yaw, viewYaw, pitch, bodyYaw, headYaw;
     static PlayerViewAngles read(Player const& player, float alpha) {
@@ -205,8 +206,8 @@ struct AnimationState {
         bool oneSided = false;
         bool meleeSpearArm = false;
     };
-    // Keys and source names borrow the immutable prepared geometry, not the
-    // engine's mutable orientation or model-part storage.
+     
+     
     std::unordered_map<std::string_view, PoseBinding> poseBindings;
     bool hasElytraLocator = false;
     double width, height;
@@ -296,8 +297,8 @@ struct AnimationState {
         connectRoamingArm(*evaluation.expressions.roaming, *armEvaluation.expressions.roaming);
         forceCutout = pack.descriptor.at("properties").value("all_cutout", false);
         visualMaterials = pack.individualBoneMaterials || forceCutout || !geometry.oneSidedParts.empty();
-        // These installed samplers own the libraries for the entire animation
-        // state. Binding now gives mesh lookups stable addresses for visuals.
+         
+         
         sampler.bindFunctions(evaluation);
         armSampler.bindFunctions(armEvaluation);
         modelId = pack.id;
@@ -378,7 +379,7 @@ static HandItem handItem(ItemStack const& stack, int slot) {
     if (stack.isNull() || !stack.mItem) return result;
     auto const& item = *stack.mItem;
     result.id = item.mFullName->getString();
-    // Durability changes during an attack/use do not select a different item.
+     
     auto variant = item.mMaxDamage > 0 ? 0 : stack.mAuxValue;
     result.identity = result.id + ":" + std::to_string(slot) + ":" + std::to_string(variant) + ":" + std::to_string(stack.mCount);
     result.maxDurability = std::max(0, static_cast<int>(item.mMaxDamage));
@@ -409,7 +410,7 @@ static HandItem handItem(ItemStack const& stack, int slot) {
         {"minecraft:is_crossbow", "crossbow"}, {"minecraft:is_bow", "bow"}, {"minecraft:is_trident", "spear"}}};
     for (auto const& [tag, category] : categories)
         if (std::find(result.tags.begin(), result.tags.end(), tag) != result.tags.end()) { result.category = category; break; }
-    // Several built-in Bedrock items do not expose the Java classifier tags.
+     
     if (result.id.starts_with("minecraft:") && result.category.empty()) {
         auto id = result.id.substr(10);
         if (id.ends_with("_sword")) result.category = "sword";
@@ -464,7 +465,7 @@ static HandInput handInput(Player const& player, bool enabled) {
         {"head", SharedTypes::Legacy::ArmorSlot::Head}, {"chest", SharedTypes::Legacy::ArmorSlot::Torso},
         {"legs", SharedTypes::Legacy::ArmorSlot::Legs}, {"feet", SharedTypes::Legacy::ArmorSlot::Feet}}})
         result.armor[name] = handItem(player.getArmor(slot), -2 - static_cast<int>(slot));
-    // Remote players can advertise use without populating the local active stack.
+     
     bool nativeUsing = player.getStatusFlag(ActorFlags::Usingitem);
     if ((nativeUsing || player.getItemUseDuration() > 0) && !player.mItemInUse->mItem->isNull())
         result.usingHand = player.mItemInUse->mSlot->mContainerId == ContainerID::Offhand ? 1 : 0;
@@ -504,8 +505,8 @@ static EntityQueryInput entityInput(Player const& player, float frameAlpha,
         input.moveInput = {move->mValue->x, move->mValue->y, move->mValue->z};
         input.nativeMoveInputAvailable = true;
     }
-    // The game's completed-frame statistic is independent of how many body,
-    // hand, UI or shadow pose callbacks happen during a display frame.
+     
+     
     input.framesPerSecond = ProfilerLite::gProfilerLiteInstance().mFrameData->mFPS;
 
     auto partialTick = std::isfinite(frameAlpha) ? std::clamp(static_cast<double>(frameAlpha), 0.0, 1.0) : 0;
@@ -600,9 +601,9 @@ static std::size_t registerVisualGeometry(AnimationState& state, std::shared_ptr
         return cached.controllers.contains(controller);
     });
     if (sameMeshes && sameControllers) { ++state.visualGeometryCacheHits; return count; }
-    // Resource identities are verified through weak owners and every mesh
-    // slot. Skin/texture replacements refresh immediately, including same-size
-    // vectors and reused addresses; stable frames reuse the binding table.
+     
+     
+     
     if (!sameMeshes) {
         cached.meshes.clear(); cached.controllers.clear();
         std::erase_if(state.visualMeshes, [](auto const& entry) { return entry.second.mesh.expired(); });
@@ -654,13 +655,15 @@ public:
         bool inventory = HandVisibilityByPass::inventoryPass(renderData && renderData->mIsInUI,
             UiRenderContextTracker::isActive(), data->inGame, data->remote);
         if (inventory) firstPerson = false;
-        if (!data->nativeRenderStacks.contains("initial")) data->nativeRenderStacks["initial"] = nativeRenderStack();
-        if (!inventory && data->calls >= 2000 && !data->nativeRenderStacks.contains("world"))
-            data->nativeRenderStacks["world"] = nativeRenderStack();
+        if (!data->diagnostics.empty()) {
+            if (!data->nativeRenderStacks.contains("initial")) data->nativeRenderStacks["initial"] = nativeRenderStack();
+            if (!inventory && data->calls >= 2000 && !data->nativeRenderStacks.contains("world"))
+                data->nativeRenderStacks["world"] = nativeRenderStack();
+        }
         if (data->visualMaterials) if (auto model = params.mModel.lock()) {
-            // Skin/texture preparation can replace meshes after getGeometry.
-            // Rebind from this exact player's current model while its native
-            // animation pass owns the render inputs, including untagged draws.
+             
+             
+             
             std::vector<RenderController const*> controllers{nullptr};
             for (auto const& controller : *model->mRenderControllers) controllers.push_back(controller.first.get());
             if (params.mAnimationComponent) {
@@ -744,7 +747,7 @@ public:
             context.localSync = !data->preview.empty();
             context.pressedKeys = data->pressedKeys;
             context.keyboardEnabled = data->inGame;
-            context.modVersions = data->modVersions;
+            if (context.modVersions != data->modVersions) context.modVersions = data->modVersions;
             auto& queries = context.queries;
             queries["ysm.texture_name"] = data->textureName;
             hands.armorValue = player->getArmorValue();
@@ -754,8 +757,8 @@ public:
             data->handInput = std::move(hands);
             data->logicalTime = parallelTime;
             data->weatherSnapshot = sampleNativeSceneQueries(nextInput, *player, params.mBaseActorRenderContext);
-            bool inputChanged = data->motionChanges.empty() || nextInput.moveInput != data->entitySnapshot.moveInput
-                || nextInput.nativeMoveInputAvailable != data->entitySnapshot.nativeMoveInputAvailable;
+            bool inputChanged = !data->diagnostics.empty() && (data->motionChanges.empty() || nextInput.moveInput != data->entitySnapshot.moveInput
+                || nextInput.nativeMoveInputAvailable != data->entitySnapshot.nativeMoveInputAvailable);
             data->entitySnapshot = nextInput;
             data->entityQueries.bind(context, data->entitySnapshot);
             NativeBlockQueryScope blocks(context, *player);
@@ -767,15 +770,15 @@ public:
             }
             data->lastSample = now;
             data->handLayers = data->hands.update(parallelTime, data->handInput);
-            for (auto const& layer : data->handLayers) data->handAnimationsSeen.insert(layer.name);
+            if (!data->diagnostics.empty()) for (auto const& layer : data->handLayers) data->handAnimationsSeen.insert(layer.name);
             double extraTime = data->extra.name.empty() ? 0 : std::chrono::duration<double>(animationNow - data->extraEpoch).count();
-            // Preview changes the selected base/input, not the lifetime of
-            // parallel players. A separate raw sampler would start new event
-            // owners at the accumulated world clock and replay old intervals.
+             
+             
+             
             auto sampledPose = data->controllers.samplePlayer(data->sampler, current, seconds, parallelTime,
                 data->evaluation, data->handInput, data->handLayers, data->extra.name, extraTime);
             if (!data->diagnostics.empty()) {
-                // A single swing can begin and end between regular status writes.
+                 
                 auto const& hand = data->handInput;
                 bool maceSwing = hand.swingingHand == 0 && hand.items[0].id == "minecraft:mace";
                 bool startedSwing = maceSwing && (!data->samplingMaceSwing || hand.swingProgress < data->lastMaceProgress);
@@ -802,12 +805,12 @@ public:
             }
             data->cachedPose = std::move(sampledPose);
             data->awaitingFormPose = false;
-            // Both installations are idle under frameMutex. A failed logical
-            // round retains dirty state for a later successful normal update.
+             
+             
             if (context.failures == context.frameFailures)
                 if (auto delta = projectRoamingArm(*context.roaming, *data->armEvaluation.expressions.roaming)) {
-                    // Roaming is latest-value state, not an event queue. Keep
-                    // the complete bounded delta for main-thread adoption.
+                     
+                     
                     for (auto const& [name, value] : *delta) data->pendingRoaming[name] = value;
                     ++data->roamingProjections;
                 }
@@ -898,10 +901,10 @@ public:
                 auto const& binding = poseLayout[index];
                 auto& value = bone.mTransform->mData;
                 auto const& baseline = bone.mDefaultTransform->mData;
-                // The native spear controller has already evaluated its attack
-                // and kinetic charge on rightarm/rightitem during this pass.
-                // Keep the grip on the native item and transfer the shoulder
-                // rotation to the model's corresponding third-person arms.
+                 
+                 
+                 
+                 
                 bool nativeSpearGrip = nativeSpear && name == "rightitem";
                 if (binding.carrier && reportDue)
                     nativeArms[name] = Json::array({Json::array({value[0]->x,value[0]->y,value[0]->z}),
@@ -936,12 +939,12 @@ public:
                     nativeSpearApplied = true;
                 }
                 if (binding.scaleRoot) {
-                    // Translate the private carrier before its own scale, as
-                    // the source renderer translates the entity pose stack.
+                     
+                     
                     value[0]->y += static_cast<float>(sourceYOffset * 16.0);
                     if (seat) {
-                        // This private, zero-pivot carrier precedes every author root.
-                        // The body pass can bypass the individual actor dispatcher.
+                         
+                         
                         auto const& matrix = *seat;
                         value[0]->x -= 16.f * matrix[3].x;
                         value[0]->y += 16.f * matrix[3].y;
@@ -1199,8 +1202,8 @@ AnimationRuntime::RoamingChanges AnimationRuntime::takeRoamingChanges(bool retir
     if (!impl->state) return {};
     auto& state = *impl->state;
     if (retire) state.active = false;
-    // Joins the complete render callback before main-thread adoption. A retired
-    // worker checks active again under this same lock and cannot append later.
+     
+     
     std::scoped_lock lock(state.frameMutex);
     RoamingChanges result{state.roamingInstallation, {}};
     result.delta.swap(state.pendingRoaming);
@@ -1242,7 +1245,8 @@ std::vector<ParticleCue> AnimationRuntime::takeParticleCues() {
 std::shared_ptr<PreviewPose const> AnimationRuntime::previewPose() const {
     auto state = impl->state;
     if (!state || !state->active) return {};
-    std::scoped_lock lock(state->frameMutex);
+    std::unique_lock lock(state->frameMutex, std::try_to_lock);
+    if (!lock.owns_lock()) return {};
     if (state->awaitingFormPose || state->sampledFrame == std::numeric_limits<std::uint64_t>::max()) return {};
     return std::make_shared<PreviewPose const>(PreviewPose{state->cachedPose, state->evaluation.expressions.boneVisuals});
 }
@@ -1250,18 +1254,18 @@ std::vector<std::string> AnimationRuntime::debugLines() const {
     auto state = impl->state;
     if (!state || !state->active) return {};
     std::scoped_lock lock(state->frameMutex);
-    std::vector<std::string> lines{"YSM 动画调试",
-        "当前动作  " + (state->state.empty() ? std::string("等待输入") : state->state),
-        "等级 " + std::to_string(state->entitySnapshot.playerLevel) + "   脚本错误累计 "
+    std::vector<std::string> lines{gameText("YSM 动画调试", "YSM Animation Debug"),
+        gameText("当前动作  ", "Current Animation: ") + (state->state.empty() ? std::string(gameText("等待输入", "Waiting for input")) : state->state),
+        gameText("等级 ", "Level: ") + std::to_string(state->entitySnapshot.playerLevel) + gameText("   脚本错误累计 ", "   Script errors: ")
             + std::to_string(state->evaluation.expressions.failures)};
-    if (!state->extra.name.empty()) lines.push_back("额外动作  " + state->extra.name);
+    if (!state->extra.name.empty()) lines.push_back(gameText("额外动作  ", "Emote: ") + state->extra.name);
     return lines;
 }
 void AnimationRuntime::start(Prepared next) {
     if (!next || next->calls || next->attachments) throw std::runtime_error("Animation candidate has already been used");
     if (!next->roamingInitialized) restoreRoaming(next, {});
-    // CPU preparation may happen long before installation. Its animation clock
-    // starts at publication, without replaying time spent loading in the worker.
+     
+     
     next->epoch = next->created = std::chrono::steady_clock::now();
     if (!next->performanceReport.empty()) {
         std::error_code error;
@@ -1353,8 +1357,8 @@ RelayPose AnimationRuntime::outgoingPose(Player const& owner, std::uint64_t& eve
     auto& context = data.evaluation.expressions;
     result.texture = data.textureName;
     result.roaming = context.roaming->snapshot();
-    // Local ability flags may not be replicated by Bedrock to observers.
-    // Sample on the game tick even if the owner never renders their body.
+     
+     
     result.flight = (owner.isFlying() ? 1u : 0u) | (owner.isGliding() ? 2u : 0u);
     auto velocity=owner.getPosDelta();
     auto const& walk=*owner.mBuiltInMobComponents->mWalkAnimationComponent;
@@ -1420,7 +1424,7 @@ void AnimationRuntime::remoteFrame() {
     auto& data = *impl->state;
     std::scoped_lock lock(data.frameMutex);
     ++data.renderFrames;
-    // Remote actions are dispatched once from the main tick.
+     
     data.evaluation.expressions.syncOut.clear();
 }
 Json AnimationRuntime::modelUiValues() const {
@@ -1485,7 +1489,7 @@ void AnimationRuntime::setHostInputs(std::set<int> keys, bool inGame,
     std::scoped_lock lock(impl->state->frameMutex);
     impl->state->pressedKeys = std::move(keys);
     impl->state->inGame = inGame;
-    impl->state->modVersions = versions;
+    if (impl->state->modVersions != versions) impl->state->modVersions = versions;
     if (newFrame) ++impl->state->renderFrames;
 }
 void AnimationRuntime::trackSeats(std::weak_ptr<NativeReplacedResources> source) {
@@ -1495,9 +1499,9 @@ void AnimationRuntime::trackSeats(std::weak_ptr<NativeReplacedResources> source)
 }
 void AnimationRuntime::prepareForRender(Player& player, AnimationComponent& component) {
     if (!impl->state || !impl->state->active || &component != &player.getAnimationComponent()) return;
-    // Native skin initialization needs its model/render-parameter preparation.
-    // Reconcile after that preparation and before animation-player iteration.
-    // Doing this in getGeometry could invalidate an iteration already in flight.
+     
+     
+     
     {
         std::scoped_lock lock(impl->state->frameMutex);
         if (impl->state->startupRenderPreparations++ < 8)
@@ -1531,8 +1535,8 @@ void AnimationRuntime::prepareGeometry(RenderController& controller, std::shared
         RenderController const* requested[]{&controller};
         visualMeshCount = registerVisualGeometry(*impl->state, geometry, requested, false);
     }
-    // Retain the native geometry so initialization and held-item parent mapping
-    // can finish. Suppress visibility only until its animation component is ready.
+     
+     
     bool drawEnabled = !(params.mActor == impl->target && params.mAnimationComponent
         && !params.mAnimationComponent->mAnimationComponentInitialized);
     auto guardedParts = impl->state->bindings.prepare(controller, geometry, impl->state->geometry.armParts, drawEnabled);
@@ -1574,8 +1578,8 @@ std::span<BoneVisual const> AnimationRuntime::boneVisuals(SkinnedMesh const& mes
     auto prepared = state->visualMeshes.find({&mesh, controller});
     if (prepared == state->visualMeshes.end()) prepared = state->visualMeshes.find({&mesh, nullptr});
     if (prepared == state->visualMeshes.end() || prepared->second.mesh.lock().get() != &mesh) {
-        // Use transient palette lookup only in this peer's own native draw.
-        // Unattributed draws must never infer the owner from shared bone names.
+         
+         
         if (owner && owner == impl->target) {
             auto const& parts = *mesh.mSkinnedParts;
             if (parts.size() > local.size()) { overflow.resize(parts.size()); local = overflow; }
@@ -1616,8 +1620,8 @@ std::span<BoneVisual const> AnimationRuntime::boneVisuals(SkinnedMesh const& mes
     auto& cached = prepared->second.parts;
     cached.resize(parts.size());
     for (std::size_t i = 0; i < parts.size(); ++i) {
-        // A mesh can replace or reorder its palette without changing its size.
-        // Only the binding is cached; the actor's visual value is read on every draw.
+         
+         
         auto hash = parts[i] ? parts[i]->mName->getHash() : 0;
         if (cached[i].part != parts[i] || cached[i].nameHash != hash) {
             cached[i] = {parts[i], parts[i] ? state->poseBinding(parts[i]->mName->getString()) : nullptr, static_cast<uint64_t>(hash)};
@@ -1649,8 +1653,8 @@ std::optional<glm::mat4> AnimationRuntime::shoulderTransform(bool left, bool inv
     auto state = impl->state;
     if (!state) return {};
     std::scoped_lock lock(state->frameMutex);
-    // The HUD paper doll can also use an orthographic camera while gameplay
-    // remains active. In that pass the player's own pose is the world pose.
+     
+     
     auto locator = inventory && !state->inGame ? state->inventoryShoulders[left ? 0 : 1]
                                                : shoulderLocator(state->evaluation.expressions, left);
     if (locator) {
@@ -1663,10 +1667,10 @@ bool AnimationRuntime::suppressNativeGlideRotation(Actor const& actor, bool firs
     std::array<float, 2> const& rotation) {
     auto state = impl->state;
     if (!state || !state->active || impl->target != &actor || firstPerson || !actor.isGliding()) return false;
-    // YSM's GeoReplacedEntityRenderer extends LivingEntityRenderer, whose
-    // model transform has no PlayerRenderer flight pitch. Authored Root bones
-    // already provide that tilt. Keep the Bedrock player state unchanged and
-    // suppress only this replacement's additional renderer-space rotation.
+     
+     
+     
+     
     state->nativeGlideX = rotation[0];
     state->nativeGlideY = rotation[1];
     ++state->suppressedGlideRotations;

@@ -921,7 +921,7 @@ int wmain(int argc, wchar_t** argv) {
         } else if (argc == 3 && std::wstring(argv[1]) == L"--portrait-cadence") {
             auto input=ysm::Json::parse(utf8(argv[2]));
             ysm::PortraitCadence clock;
-            clock.rate(input.value("fps",30));
+            clock.rate(input.value("fps",60));
             auto submitted=ysm::Json::array();
             for(double t:input.at("times").get<std::vector<double>>()) {
                 auto now=std::chrono::steady_clock::time_point{}+std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(t));
@@ -959,6 +959,8 @@ int wmain(int argc, wchar_t** argv) {
                         auto candidate=std::make_shared<ysm::LibraryPreview>();
                         candidate->source=selected.at("source").get<std::string>();
                         candidate->name=selected.value("name",candidate->source);
+                        candidate->descriptor=selected.value("descriptor",candidate->descriptor);
+                        candidate->languages=selected.value("languages",candidate->languages);
                         candidate->animation=selected.value("animation",std::string{});
                         candidate->clips=selected.value("clips",candidate->clips);
                         snapshot.browsing=std::move(candidate);
@@ -994,7 +996,7 @@ int wmain(int argc, wchar_t** argv) {
                     if(point) ui.mouse(e.value("button",0),e.value("value",0),point->x,point->y);
                 }
                 else if(op!="draw")throw std::runtime_error("Unknown UI event");
-                auto scene=ui.draw(input.value("width",640.f),input.value("height",360.f),input.value("hotbar_top",-1.f));auto commands=ysm::Json::array();
+                auto const& scene=ui.draw(input.value("width",640.f),input.value("height",360.f),input.value("hotbar_top",-1.f));auto commands=ysm::Json::array();
                 for(auto const& c:ui.takeCommands())commands.push_back({{"kind",c.kind},{"key",c.key},{"value",c.value},{"label",c.label},{"generation",c.generation}});
                 auto frame=ui.report();
                 frame["pointer_source"]=pointer.source();
@@ -1004,7 +1006,8 @@ int wmain(int argc, wchar_t** argv) {
                 frame["animate_preview"]=scene.animatePreview;
                 frame["commands"]=commands;frame["text"]=ysm::Json::array();
                 auto split=std::min(scene.overlayStart,scene.paint.size());auto paint=std::span<ysm::UiPaint const>(scene.paint);
-                auto main=ysm::buildUiMesh(paint.first(split)),cursor=ysm::buildUiMesh(paint.subspan(split));
+                auto main=ysm::buildUiMesh(paint.first(split)),cursor=ysm::buildUiMesh(scene.cursor);
+                frame["scene_revision"]=scene.revision;
                 frame["mesh_vertices"]=main.size()+cursor.size();frame["mesh_batches"]=ysm::uiMeshBatches(main.size())+ysm::uiMeshBatches(cursor.size());
                 for(auto const& p:scene.paint)if(!p.text.empty())frame["text"].push_back({{"text",p.text},{"x",p.rect.x},{"y",p.rect.y},{"w",p.rect.w},{"h",p.rect.h}});
                 if(input.value("paint",false)) {
@@ -1091,7 +1094,7 @@ int wmain(int argc, wchar_t** argv) {
                     live.emplace(ysm::PreviewPose{std::move(bones),eval.expressions.boneVisuals});
                 }
                 auto mesh = preview.mesh(clip, time, view, pack.selectedTexture,live ? &*live : nullptr);
-                // Reproduce the preceding release's missing depth with identical geometry and sampling.
+                 
                 if (options.value("flatten_depth", false)) for (auto& vertex : mesh.vertices) vertex.z = .5f;
                 ysm::PreviewDepthRenderer renderer;
                 image = renderer.render(mesh, options.value("side", 224u));

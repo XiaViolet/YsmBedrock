@@ -1,3 +1,4 @@
+#include "Localization.h"
 #include "ModelLibrary.h"
 #include "LegacyBundle.h"
 #include <algorithm>
@@ -121,8 +122,8 @@ std::vector<ModelLibrary::Entry> ModelLibrary::scan(std::filesystem::path const&
             auto begin = result.size();
             for (auto const& child : std::filesystem::directory_iterator(item.path(), std::filesystem::directory_options::skip_permission_denied))
                 self(self, child, depth + 1);
-            // A single nested source folder used to be addressed by its
-            // wrapper name. Keep saved selections and textures on that key.
+             
+             
             if (depth == 1 && result.size() == begin + 1 && result.back().directory) {
                 result.back() = std::move(entry);
                 return;
@@ -152,14 +153,14 @@ ModelChoice ModelLibrary::prepare(Preparation mode, std::function<void(ModelPack
             if (stop.stop_requested()) { result.cancelled = true; return result; }
             if (auto source = sharedModels.find(entry.source); source != sharedModels.end()) {
                 result.catalog.push_back({{"source", entry.source}, {"id", entry.id}, {"kind", "server"},
-                    {"name", source->second.title}, {"author", "服务器"}, {"status", "unloaded"}});
+                    {"name", source->second.title}, {"author", gameText("服务器", "Server")}, {"status", "unloaded"}});
                 continue;
             }
             auto kind = entry.directory ? "folder" : lower(utf8(entry.path.extension())).substr(1);
             Json row{{"source", entry.source}, {"id", entry.id}, {"kind", kind}, {"status", "unloaded"}};
             try {
-                // The v3 descriptor follows its asset data. Defer other cards
-                // until the model list is visible so they do not delay selection.
+                 
+                 
                 if (kind == "ysm" && isLegacyV3(entry.path)) {
                     if (auto stamp = fileStamp(entry.path)) {
                         legacyV3Stamps.emplace(entry.source, *stamp);
@@ -176,7 +177,7 @@ ModelChoice ModelLibrary::prepare(Preparation mode, std::function<void(ModelPack
                     displayMetadata(row, text(metadata, "name"), authorName(metadata));
                     row["languages"] = std::move(info.at("languages"));
                 }
-            } catch (std::exception const&) { /* Full preparation supplies the error without removing the entry. */ }
+            } catch (std::exception const&) {   }
             result.catalog.push_back(std::move(row));
         }
         if (mode == Preparation::Catalog) return result;
@@ -287,30 +288,30 @@ ModelChoice ModelLibrary::browse(std::string const& source, std::stop_token stop
 }
 ModelChoice ModelLibrary::importSource(std::filesystem::path const& input, std::stop_token stop) const {
     namespace fs = std::filesystem;
-    if (input.empty()) throw std::runtime_error("请选择模型文件或源文件夹");
+    if (input.empty()) throw std::runtime_error(gameText("请选择模型文件或源文件夹", "Select a model file or source folder"));
     fs::create_directories(directory);
     auto source = fs::canonical(input);
     auto root = fs::canonical(directory);
     bool folder = fs::is_directory(source);
     auto extension = lower(utf8(source.extension()));
     if (!folder && (!fs::is_regular_file(source) || (extension != ".zip" && extension != ".ysm")))
-        throw std::runtime_error("支持 ZIP、YSM 和模型源文件夹");
+        throw std::runtime_error(gameText("支持 ZIP、YSM 和模型源文件夹", "Supported: ZIP, YSM and model source folders"));
     if (source.filename().empty())
-        throw std::runtime_error("请选择具体模型");
-    // equivalent() compares Windows paths with filesystem case semantics.
+        throw std::runtime_error(gameText("请选择具体模型", "Select a specific model"));
+     
     for (auto parent = root; folder; parent = parent.parent_path()) {
-        if (fs::equivalent(source, parent)) throw std::runtime_error("不能把模型库或其上级目录导入自身");
+        if (fs::equivalent(source, parent)) throw std::runtime_error(gameText("不能把模型库或其上级目录导入自身", "Cannot import the model library or its parent into itself"));
         if (parent == parent.root_path()) break;
     }
     auto validate = [&](fs::path const& path) {
-        if (stop.stop_requested()) throw std::runtime_error("已取消导入");
+        if (stop.stop_requested()) throw std::runtime_error(gameText("已取消导入", "Import cancelled"));
         if (folder && !ModelPack::isSourceDirectory(path)) {
             std::vector<std::string> messages;
-            // Use catalog discovery so a collection cannot silently import as its first child.
+             
             ModelLibrary staged(path.parent_path(), {});
             auto entries = scan(staged.directory, messages);
             if (std::none_of(entries.begin(), entries.end(), [&](auto const& entry) { return entry.path == path; }))
-                throw std::runtime_error("请选择单个模型的源文件夹");
+                throw std::runtime_error(gameText("请选择单个模型的源文件夹", "Select a single model source folder"));
         }
         return ModelPack::load(path);
     };
@@ -327,11 +328,11 @@ ModelChoice ModelLibrary::importSource(std::filesystem::path const& input, std::
         ~Cleanup() { std::error_code ignored; fs::remove_all(path, ignored); }
     } cleanup{stage};
     auto copy = stage / source.filename();
-    auto check = [&] { if (stop.stop_requested()) throw std::runtime_error("已取消导入"); };
+    auto check = [&] { if (stop.stop_requested()) throw std::runtime_error(gameText("已取消导入", "Import cancelled")); };
     auto regularEntry = [](fs::path const& path) {
         auto attrs = GetFileAttributesW(path.c_str());
         if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_REPARSE_POINT))
-            throw std::runtime_error("无法读取模型或模型包含链接目录");
+            throw std::runtime_error(gameText("无法读取模型或模型包含链接目录", "Cannot read model or it contains a linked directory"));
     };
     check();
     regularEntry(input);
@@ -342,7 +343,7 @@ ModelChoice ModelLibrary::importSource(std::filesystem::path const& input, std::
             auto target = copy / entry.path().lexically_relative(source);
             if (entry.is_directory()) fs::create_directory(target);
             else if (entry.is_regular_file()) fs::copy_file(entry.path(), target);
-            else throw std::runtime_error("模型目录包含无法导入的文件");
+            else throw std::runtime_error(gameText("模型目录包含无法导入的文件", "Model folder contains files that cannot be imported"));
         }
     } else fs::copy_file(source, copy);
     auto imported = validate(copy);
@@ -413,8 +414,8 @@ void ModelLibrary::rememberTexture(ModelPack const& pack) {
         if (map.size() >= 1024) throw std::runtime_error("Saved texture source budget exceeded (1024)");
         map[key] = value;
     };
-    // Fallback can occur while the requested source is missing or damaged.
-    // Keep its previous texture so a later repair/restart can restore it.
+     
+     
     auto oldTexture = text(next, "texture"), oldSource = text(next, "source"), oldModel = text(next, "model");
     if (!oldTexture.empty()) {
         if (oldSource.empty() && !oldModel.empty()) {

@@ -21,3 +21,4 @@ __pycache__/
 /*-status.json
 /*-diagnostics.json
 /performance/
+.idea

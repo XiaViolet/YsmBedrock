@@ -2,12 +2,13 @@
 #include "ModelPack.h"
 #include "ModelPreview.h"
 #include "Molang.h"
+#include "UiIcons.h"
 #include <cstdint>
 #include <deque>
 
 namespace ysm {
-// Source-authored routes, compiled once per installation. UI text is never
-// interpreted as a program and stale screens cannot address a new installation.
+ 
+ 
 class ModelUiBindings {
     struct Form {
         std::string type;
@@ -19,8 +20,8 @@ class ModelUiBindings {
     std::set<std::string> formVariables;
 public:
     explicit ModelUiBindings(Json const& descriptor = Json::object());
-    // Only scalar variables explicitly writable by this model's config forms
-    // may be restored by a remote wearer snapshot.
+     
+     
     std::map<std::string,float> snapshotScalars(MolangContext const&) const;
     bool applyScalars(MolangContext&, std::map<std::string,float> const& previous, std::map<std::string,float> const& next) const;
     Json observe(MolangContext const& context) const;
@@ -32,11 +33,11 @@ struct UiRect {
     float x = 0, y = 0, w = 0, h = 0;
     bool contains(float px, float py) const { return px >= x && py >= y && px < x+w && py < y+h; }
 };
-struct UiPaint { UiRect rect; std::uint32_t color; std::string text; float scale = 1; bool centered = false; float radius = 0; int wheelSector = -1; };
+struct UiPaint { UiRect rect; std::uint32_t color; std::string text; float scale = 1; bool centered = false; float radius = 0; int wheelSector = -1; bool line = false; float endX = 0, endY = 0; bool rawColor = false; UiIcon icon = UiIcon::None; bool isAtlasItem() const { return !text.empty() || icon != UiIcon::None; } };
 struct UiCommand { std::string kind, key; double value = 0; int label = -1; std::uint64_t generation = 0; };
 struct LibraryPreview {
     std::string source, name, animation;
-    Json languages = Json::object();
+    Json languages = Json::object(), descriptor = Json::object();
     std::vector<std::string> clips;
     std::size_t texture = 0;
     bool fixedRotation = false;
@@ -51,19 +52,21 @@ struct UiSnapshot {
     std::shared_ptr<LibraryPreview const> browsing;
     std::string browseLoading;
     bool enabled = false, loading = false, debugOverlay = false;
+    bool operator==(UiSnapshot const&) const = default;
 };
 struct UiScene {
-    std::vector<UiPaint> paint;
+    std::vector<UiPaint> paint, cursor;
+    std::uint64_t revision = 0;
     std::optional<UiRect> preview;
     PreviewCamera previewCamera;
     std::string previewClip;
     bool animatePreview = false, libraryPreview = false, livePlayerPreview = false;
     std::size_t overlayStart = static_cast<std::size_t>(-1);
 };
-// Renderer-independent state machine, shared with the executable verifier.
+ 
 class YsmUi {
 public:
-    enum class Page { Closed, Models, Textures, Info, Settings, Preview, Roulette, Forms, Players, Import };
+    enum class Page { Closed, Models, Textures, Info, Settings, Preview, Roulette, Forms, Players, Import, Appearance };
 private:
     struct Hit { UiRect rect; std::string id; };
     struct Range { UiRect rect; std::string id, route; double min, max, step; bool setting; };
@@ -88,6 +91,12 @@ private:
     PreviewCamera previewCamera;
     UiRect wheelBounds;
     int wheelHovered = -1;
+    bool sceneDirty = true;
+    std::uint64_t sceneRevision = 0;
+    float cursorX = -2, cursorY = -2;
+    float cachedWidth = 0, cachedHeight = 0, cachedHotbar = 0;
+    UiScene cachedScene;
+    UiScene buildScene(float width, float height, float hotbarTop);
     std::vector<WheelEntry> wheelEntries() const;
     std::string local(std::string const& key, std::string fallback) const;
     void command(std::string kind, std::string key = {}, double value = 0, int label = -1);
@@ -106,7 +115,7 @@ public:
     bool key(int virtualKey, bool down, bool control = false, std::string text = {}, bool shift = false);
     bool mouse(int button, int value, float x, float y);
     void cancelPointer();
-    UiScene draw(float width, float height, float hotbarTop = -1.f);
+    UiScene const& draw(float width, float height, float hotbarTop = -1.f);
     std::vector<UiCommand> takeCommands();
     Json report() const;
     static Json defaultSettings();

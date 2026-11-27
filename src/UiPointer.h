@@ -29,6 +29,7 @@ public:
     void reset() { *this = UiPointer{}; }
     bool usesRelativeMotion() const { return relative; }
     bool usesTouch() const { return touch; }
+    bool needsSoftwareCursor(bool nativeVisible) const { return !touch && !nativeVisible; }
     char const* source() const { return touch ? "touch" : relative ? "relative" : useGamePosition ? "game_absolute" : "absolute"; }
     std::optional<UiPoint> contact(UiPoint pixel, float width, float height, float guiWidth, float guiHeight) {
         if (!(width > 0 && height > 0)) return {};

@@ -1,3 +1,4 @@
+#include "Localization.h"
 #include "NativeRoomSync.h"
 #include "RoomAssets.h"
 #include <chrono>
@@ -108,8 +109,8 @@ struct NativeRoomSync::Impl {
             std::unique_lock lock(mutex);
             auto hasWork=[&]{return stop.stop_requested() || generation!=live || !input.empty() || !commands.empty() || !shots.empty() || local.has_value();};
             if(endpoints.empty() && publications.empty() && verifications.empty()){
-                // Transport membership, settings and world transitions all wake the worker.
-                // No room timers or file completions need polling in a solo world.
+                 
+                 
                 wake.wait(lock,hasWork);
             }else{
                 wake.wait_for(lock,std::chrono::milliseconds(25),hasWork);
@@ -123,7 +124,7 @@ struct NativeRoomSync::Impl {
             std::deque<Shot> newShots;newShots.swap(shots);
             auto state=std::exchange(local,{});
             bool haveEndpoints=!endpoints.empty();
-            // One protocol tick emits at most 32 controls (128 KiB) plus four chunks.
+             
             auto congested=outgoingBytes>maxBacklog-(256u<<10) || output.size()>440;
             lock.unlock();
             try {
@@ -251,18 +252,18 @@ struct NativeRoomSync::Impl {
                         auto wearer=room->frame().players.find(id);
                         if(wearer!=room->frame().players.end() && wearer->second.session==streamId){
                             readyFiles.erase(wearer->second.contentKey);room->retry(id,streamId);
-                            message="已请求重新下载玩家模型";
+                            message=gameText("已请求重新下载玩家模型", "Requested player model download again");
                         }
                     }
                     else if(task.starts_with("retry-upload:") && haveEndpoints && room->connected()
                         && !key.empty() && task.substr(13)==room->session()+"|"+key){
                         if(current && room->canRetryUpload()){
-                            room->retryUpload();message="已请求重新上传当前模型";
+                            room->retryUpload();message=gameText("已请求重新上传当前模型", "Requested current model upload again");
                         }else if(!current && pendingSource.empty() && !std::ranges::any_of(publications,[&](auto const& job){
                             return job.worn && job.generation==live && job.revision==sourceRevision;
                         })){
-                            // The next local snapshot retries the original import and authorization checks.
-                            source.clear();message="正在重新准备上传文件";
+                             
+                            source.clear();message=gameText("正在重新准备上传文件", "Preparing file for upload again");
                         }
                     }
                     else if(task.starts_with("select:"))room->select(task.substr(7));
@@ -274,7 +275,7 @@ struct NativeRoomSync::Impl {
                         if(split!=std::string::npos)room->acceptOffer(task.substr(6,split-6),task.substr(split+1));
                     }
                 }
-                // A solo world and a server without the room protocol need no model snapshot.
+                 
                 if(!haveEndpoints){
                     if(!source.empty() || current){
                         source.clear();key.clear();current.reset();pendingSource.clear();++sourceRevision;
@@ -304,8 +305,8 @@ struct NativeRoomSync::Impl {
                     nextRates=Clock::now()+std::chrono::seconds(1);
                 }
                 if(!congested) batch=room->tick(ms);
-                // Keep a CPU lane available for a newly visible/current model while
-                // one lower-priority archive is being verified.
+                 
+                 
                 auto running=std::count_if(verifications.begin(),verifications.end(),[](auto const& job){return job.task.valid();});
                 VerifyJob* best=nullptr;
                 for(auto& job:verifications){
@@ -361,7 +362,7 @@ struct NativeRoomSync::Impl {
                     if(a==view->frame.assets.end() || !a->second.selectable)pendingCollect.clear();
                     else if(view->ready.contains(pendingCollect)){
                         pendingCollect.clear();
-                        message="已收藏 "+filename(files->collect(a->second,root/"models"));
+                        message=gameText("已收藏 ", "Saved ")+filename(files->collect(a->second,root/"models"));
                     }
                 }
                 view->autoReceive=activeRules.autoReceiveCurrent;view->message=message;
@@ -398,9 +399,9 @@ NativeRoomSync::NativeRoomSync():impl(std::make_unique<Impl>()){}
 NativeRoomSync::~NativeRoomSync(){stop();}
 void NativeRoomSync::start(fs::path const& root){
     stop();
-    // BedrockBoot links the instance's mods directory to its loader-managed
-    // location. Resolve this trusted installation path before deriving any
-    // cache paths. RoomAssets still rejects links inside the managed cache.
+     
+     
+     
     impl->root=fs::canonical(root);
     fs::create_directories(impl->root/"room-share");
     if(!fs::exists(impl->root/"room-sync.json"))settings(impl->root);

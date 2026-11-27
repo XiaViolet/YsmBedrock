@@ -37,6 +37,7 @@ class UiTests(unittest.TestCase):
 
     def session(self, events, **data):
         data.setdefault('source', 'model.zip')
+        data.setdefault('locale', 'zh_CN')
         return run('--ui-session', dict(generation=1, events=events, **data))
 
     def click(self, events, label, **data):
@@ -82,15 +83,15 @@ class UiTests(unittest.TestCase):
                 return {line['text'] for line in frame['text']}
             open_menu = [dict(op='open')]
             frames = self.session(open_menu + [dict(op='update', locale='zh_CN'), dict(op='update', locale='pt_BR')], **data)
-            self.assertTrue({'French model', 'Base author', 'Base tip'} <= labels(frames[0]))
+            self.assertTrue({'French model', 'English author', 'English tip'} <= labels(frames[0]))
             self.assertTrue({'English model', 'English author', 'English tip'} <= labels(frames[1]))
-            self.assertTrue({'Base model', 'Base author', 'Base tip'} <= labels(frames[2]))
-            search = self.click(open_menu, '搜索名称（可粘贴中文）', **data)
+            self.assertTrue({'English model', 'English author', 'English tip'} <= labels(frames[2]))
+            search = self.click(open_menu, 'Search models', **data)
             query = dict(op='key', key=86, control=True, text='French model')
             filtered = self.session(search + [query, dict(op='update', locale='en_US')], **data)
-            self.assertIn('1 个模型', labels(filtered[-2]))
-            self.assertIn('0 个模型', labels(filtered[-1]))
-            textures = self.click(open_menu, '贴图', **data)
+            self.assertIn('1 models', labels(filtered[-2]))
+            self.assertIn('0 models', labels(filtered[-1]))
+            textures = self.click(open_menu, 'Textures', **data)
             self.assertIn('French skin', labels(self.session(textures, **data)[-1]))
             wheel = [dict(op='open', wheel=True)]
             target=next(t for t in self.session(wheel, **data)[-1]['text'] if t['text']=='French wheel')
@@ -98,11 +99,24 @@ class UiTests(unittest.TestCase):
             self.assertTrue({'French wheel', 'French note'} <= labels(self.session(wheel, **data)[-1]))
             forms = wheel + [dict(op='key', key=49)]
             frames = self.session(forms + [dict(op='update', locale='en_US')], **data)
-            self.assertTrue({'French title', 'Base description', 'French option'} <= labels(frames[-2]))
+            self.assertTrue({'French title', 'English description', 'French option'} <= labels(frames[-2]))
             self.assertTrue({'English title', 'English description', 'English option'} <= labels(frames[-1]))
             chosen = self.click(forms, 'French option', **data)
             self.assertEqual(self.session(chosen, **data)[-1]['commands'],
                              [dict(kind='form', key='appearance/0', value=0, label=0, generation=1)])
+
+    def test_english_ui_and_imported_emotes_preserve_internal_ids(self):
+        descriptor = {'properties': {'extra_animation': {'extra0': '招手', 'extra1': '跳舞', 'extra2': '自定义未翻译'} }}
+        data = dict(locale='en_US', descriptor=descriptor, clips=['extra0','extra1','extra2'], paint=True, width=960, height=540)
+        wheel = [dict(op='open', wheel=True)]
+        frames = self.session(wheel + [dict(op='update', locale='zh_CN'), dict(op='update', locale='en_US'), dict(op='key', key=49)], **data)
+        labels = lambda frame: {item['text'] for item in frame['text']}
+        self.assertTrue({'Emote Wheel', 'Wave', 'Dance', 'Emote 3'} <= labels(frames[0]))
+        self.assertIn('招手', labels(frames[1]))
+        self.assertIn('Wave', labels(frames[2]))
+        self.assertEqual(frames[-1]['commands'][0]['key'], 'extra0')
+        preview = self.click([dict(op='open')], 'Preview', **data)
+        self.assertTrue({'Wave','Dance','Emote 3'} <= labels(self.session(preview, **data)[-1]))
 
     def test_original_shortcuts_have_edge_detection(self):
         events = [dict(key=18, down=True), dict(key=89, down=True), dict(key=89, down=True),
@@ -158,7 +172,6 @@ class UiTests(unittest.TestCase):
         self.assertFalse(frames[-1]['open'])
         self.assertEqual([c['key'] for c in frames[-1]['commands']],['dance'])
         self.assertEqual(self.session(wheel+[dict(op='key',key=49)],**data)[-1]['commands'][0]['key'],'both')
-        # The thin gap between neighbouring painted sectors has no click target.
         a,b=shapes[0],shapes[1]
         mid=len(a)//2
         gap=[sum(p[i] for p in [a[mid-1],a[mid],b[0],b[-1]])/4 for i in (0,1)]
@@ -180,21 +193,21 @@ class UiTests(unittest.TestCase):
         data=dict(width=920,height=540,paint=True)
         settings=self.click([dict(op='open')],'本地设置',**data)
         frame=self.session(settings,**data)[-1]
-        hint=next(t for t in frame['text'] if t['text']=='纸娃娃帧率  30')
-        track=next(p for p in frame['paint'] if p['color']==0xffe0e7df and p['w']>100
+        hint=next(t for t in frame['text'] if t['text']=='纸娃娃帧率  60')
+        track=next(p for p in frame['paint'] if p['color']==0xff344052 and p['w']>100
                    and p['x']>hint['x'] and abs(p['y']-hint['y'])<12)
-        for fraction,rate in ((0,5),(.4,15),(.999,30)):
+        for fraction,rate in ((0,5),(10/55,15),(25/55,30),(.999,60)):
             clicked=dict(op='mouse',button=1,value=1,x=track['x']+fraction*track['w'],y=track['y']+1)
             self.assertEqual(self.session(settings+[clicked],**data)[-1]['commands'][0],
                              dict(kind='setting',key='hud_fps',value=rate,label=-1,generation=1))
 
-    def test_portrait_cadence_30_fps_and_no_catchup_burst(self):
+    def test_portrait_cadence_60_fps_and_no_catchup_burst(self):
         for game_rate in (60,120,144):
             times=[i/game_rate for i in range(game_rate*2)]
-            for fps in (5,15,30,100):
+            for fps in (5,15,30,60,100):
                 result=run('--portrait-cadence',dict(times=times,fps=fps))
-                self.assertEqual(len(result),2*min(fps,30))
-        self.assertEqual(run('--portrait-cadence',dict(times=[0,.001,2,2.001,2.033,2.034])),[0,2,2.034])
+                self.assertEqual(len(result),2*min(fps,60))
+        self.assertEqual(run('--portrait-cadence',dict(times=[0,.001,2,2.001,2.016,2.017])),[0,2,2.017])
 
     def test_ninth_wheel_entry_and_empty_slots(self):
         descriptor = {'properties': {'extra_animation': {f'dance{i}': str(i) for i in range(9)}}}
@@ -272,7 +285,6 @@ class UiTests(unittest.TestCase):
             self.assertEqual([c['kind'] for c in frame['commands']], [kind])
             if kind == 'open_models_folder':
                 self.assertIn('选择模型包', {t['text'] for t in frame['text']})
-        # Native scale 1, refresh icon centered at (613, 126).
         frame = self.session(opened + [dict(op='mouse', button=1, value=1, x=613, y=126)],
                              width=952, height=592, **data)[-1]
         self.assertEqual([(c['kind'], c['key']) for c in frame['commands']], [('reload', '')])
@@ -414,9 +426,7 @@ class UiTests(unittest.TestCase):
                       dict(type='range',value='v.roaming.size',min=0,max=1,step=0)]}]}})
         events=[dict(op='open',wheel=True),dict(op='key',key=49)]
         frame=self.session(events,**data)[-1]
-        # Select the teal track from the real paint output. This tests pointer
-        # hit geometry and the route, including release, rather than a setter.
-        track=next(p for p in frame['paint'] if p['text']=='' and p['color']==0xffe0e7df and p['w']>150 and 2<p['h']<5)
+        track=next(p for p in frame['paint'] if p['text']=='' and p['color']==0xff344052 and p['w']>150 and 2<p['h']<5)
         events += [dict(op='mouse',button=1,value=1,x=track['x']+track['w']*.375,y=track['y']+1),
                    dict(op='mouse',button=0,x=track['x']+track['w']*.625,y=track['y']+1),
                    dict(op='mouse',button=1,value=0,x=track['x']+track['w']*.625,y=track['y']+1)]
@@ -424,6 +434,19 @@ class UiTests(unittest.TestCase):
         writes=[c for f in frames for c in f['commands'] if c['kind']=='form']
         self.assertEqual(writes[-1]['key'],'face/0')
         self.assertAlmostEqual(writes[-1]['value'],.625,places=5)
+
+    def test_theme_setting_and_cursor_only_motion(self):
+        data=dict(locale='en_us',width=960,height=540)
+        events=self.click([dict(op='open')],'Settings',**data)
+        events=self.click(events,'Appearance',**data)
+        frame=self.session(events,**data)[-1]
+        self.assertIn('Midnight',[label['text'] for label in frame['text']])
+        events=self.click(events,'Light',**data)
+        frame=self.session(events,**data)[-1]
+        self.assertEqual(frame['commands'][0]['key'],'menu_theme')
+        self.assertEqual(frame['commands'][0]['value'],1)
+        frames=self.session([dict(op='open'),dict(op='mouse',x=2,y=2),dict(op='mouse',x=3,y=3)],**data)
+        self.assertEqual(frames[-1]['scene_revision'],frames[-2]['scene_revision'])
 
     def test_typography_stays_inside_each_page_at_small_gui_sizes(self):
         for width,height in [(320,180),(640,360),(960,540),(480,640)]:
@@ -717,15 +740,11 @@ class ModelPreviewTests(unittest.TestCase):
             for face, (yaw, pitch) in views.items():
                 expected_side = swapped[face] if face in ('west', 'east') else face
                 with self.subTest(mode='BoxMirror', face=face):
-                    # An exact side-on comparison requires compensating for the
-                    # Java texture screen's ten-degree camera inclination.
                     side_yaw, side_pitch = views[expected_side]
                     correction = 10 if face in ('east', 'west') else 0
                     self.assertEqual(draw('BoxMirror', yaw, pitch + correction),
                                      draw('Box', side_yaw, side_pitch + correction))
 
-            # The Java reference frames show the yellow top at all four
-            # horizontal headings, including both sides.
             top = {tuple(round(channel * shade) for channel in palette['up']) for shade in shades}
             for yaw in (0, 90, 180, -90):
                 data = draw('Plain', yaw, 0)

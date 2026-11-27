@@ -1,3 +1,4 @@
+#include "ModelLocalization.h"
 #include "ll/api/mod/NativeMod.h"
 #include "ll/api/mod/RegisterHelper.h"
 #include "ll/api/mod/ModManagerRegistry.h"
@@ -101,16 +102,16 @@
 namespace ysm {
 static void installHooks();
 static void removeHooks();
-// The immediate player renderer can clone a skinned mesh after geometry
-// registration. Keep its exact owner for this draw, including nested renders.
+ 
+ 
 struct ActorDrawScope {
     static inline thread_local Actor const* current = nullptr;
     Actor const* previous;
     explicit ActorDrawScope(Actor const* actor) : previous(std::exchange(current, actor)) {}
     ~ActorDrawScope() { current = previous; }
 };
-// Only valid on the game call stack that is creating this shot. No player
-// or item pointer from the integrated server is retained by the room worker.
+ 
+ 
 struct ArrowLaunchScope {
     static inline thread_local ArrowLaunchScope* current = nullptr;
     Player* player;
@@ -167,6 +168,7 @@ class Mod {
     KeyBindings keys;
     NativeYsmUi ui;
     Json uiSettings = YsmUi::defaultSettings();
+    std::optional<std::chrono::steady_clock::time_point> settingsSaveAt;
     bool debugOverlay = false;
     std::atomic<bool> arkeShaderEnabled{false};
     std::chrono::steady_clock::time_point nextArkeCheck{};
@@ -178,8 +180,8 @@ class Mod {
         bool enabled = false;
         if (arke && arke->isEnabled() && uiSettings.value("arke_extra_emissive_layer", false)) {
             std::ifstream stream(arke->getModDir() / "config.json");
-            // Arke 0.1.5 stores shader selection in a small JSON document.
-            // A truncated config during a preset switch falls back on the next tick.
+             
+             
             std::array<char, 4097> bytes;
             stream.read(bytes.data(), bytes.size());
             auto count = stream.gcount();
@@ -261,7 +263,9 @@ public:
                 for (auto const& [key, value] : uiSettings.items()) if (input.contains(key)) {
                     auto const& saved = input.at(key);
                     if (value.is_boolean() && saved.is_boolean()) uiSettings[key] = saved;
-                    else if (key=="hud_fps" && saved.is_number_integer()) uiSettings[key]=static_cast<int>(std::clamp(saved.get<double>(),5.,30.));
+                    else if ((key=="menu_theme" || key=="preview_quality" || key=="preview_fps") && saved.is_number_integer())
+                        uiSettings[key]=std::clamp(saved.get<int>(),key=="preview_fps"?15:0,key=="menu_theme"?3:key=="preview_quality"?2:60);
+                    else if (key=="hud_fps" && saved.is_number_integer()) uiSettings[key]=static_cast<int>(std::clamp(saved.get<double>(),5.,60.));
                     else if ((key == "sound_volume" || key.starts_with("hud_")) && saved.is_number_integer())
                         uiSettings[key] = static_cast<int>(std::clamp(saved.get<double>(), 0.0, 100.0));
                     else if ((key == "favorites" || key == "hidden_players") && saved.is_array() && saved.size() <= 1024) {
@@ -306,7 +310,7 @@ public:
             auto const& version = mod.getManifest().version;
             if (version) modVersions[mod.getName()] = version->to_string();
         }
-        // Source models use the Java mod ID; report this port's own version.
+         
         if (auto const& version = self->getManifest().version) modVersions["ysm"] = version->to_string();
         clearNativeWeather();
         installHooks();
@@ -354,11 +358,12 @@ public:
         std::ofstream(self->getModDir() / "runtime-status.json") << Json{{"stage", stage}}.dump(2);
     }
     void saveUiSettings() {
+        settingsSaveAt.reset();
         try {
             auto path = self->getModDir() / "ui-settings.json", temporary = self->getModDir() / "ui-settings.json.tmp";
             { std::ofstream out(temporary, std::ios::binary | std::ios::trunc); out << uiSettings.dump(2); out.close(); if (!out) throw std::runtime_error("Cannot save UI settings"); }
             std::filesystem::rename(temporary, path);
-        } catch (std::exception const& error) { self->getLogger().warn("UI settings save failed: {}", error.what()); uiMessage = "设置保存失败，请检查日志"; }
+        } catch (std::exception const& error) { self->getLogger().warn("UI settings save failed: {}", error.what()); uiMessage = gameText("设置保存失败，请检查日志", "Could not save settings. Check the log."); }
     }
     void updateCatalogCards() {
         if (!library || modelJob || pendingModel || queuedModel) return;
@@ -394,7 +399,7 @@ public:
         if (process != GetCurrentProcessId()) owner = nullptr;
         browseStop.request_stop();
         nextBrowse = BrowseRequest{kind, source, owner};
-        browseLoading = kind == BrowseKind::Catalog ? (source.empty() ? "模型库" : source) : "导入模型";
+        browseLoading = kind == BrowseKind::Catalog ? (source.empty() ? gameText("模型库", "Model Library") : source) : gameText("导入模型", "Import Model");
         uiMessage.clear();
     }
     void pollBrowse() {
@@ -408,7 +413,7 @@ public:
                     if (result.info) {
                         browseRenderer = std::move(result.renderer);
                         browseInfo = std::move(result.info);
-                    } else if (!result.choice.diagnostics.empty()) uiMessage = "模型无法预览：" + result.choice.diagnostics.front();
+                    } else if (!result.choice.diagnostics.empty()) uiMessage = gameText("模型无法预览：", "Cannot preview model: ") + result.choice.diagnostics.front();
                 }
             } catch (std::exception const& e) {
                 if (!browseStop.stop_requested()) { browseLoading.clear(); uiMessage = e.what(); }
@@ -435,6 +440,7 @@ public:
                 info->source = result.choice.source;
                 info->name = model.descriptor.at("metadata").value("name", model.id);
                 info->languages = model.languages;
+                info->descriptor = model.descriptor;
                 auto const& properties = model.descriptor.at("properties");
                 info->animation = properties.value("preview_animation", std::string{});
                 info->fixedRotation = properties.value("disable_preview_rotation", false);
@@ -463,9 +469,8 @@ public:
         snapshot.players = relay.playerRows(lastPlayer);
         snapshot.room = relay.roomInfo();
         if (library) {
-            auto report = library->report();
             snapshot.source = library->source();
-            for (auto const& row : report.at("catalog"))
+            for (auto const& row : library->catalogRows())
                 if (row.value("kind", "") != "server") snapshot.catalog.push_back(row);
             for (auto const& row : relay.catalogRows()) snapshot.catalog.push_back(row);
         }
@@ -476,7 +481,7 @@ public:
             for (auto const& texture : pack->textures) snapshot.textures.push_back(texture.name);
             for (auto const& [group, document] : pack->animations.items()) if (group != "fp_arm")
                 for (auto const& [name, clip] : document.at("animations").items()) snapshot.clips.push_back(name);
-            snapshot.values = animation.modelUiValues();
+            if (ui.showsForms()) snapshot.values = animation.modelUiValues();
         }
         ui.updateMenu(client, *session, std::move(snapshot), browseRenderer);
     }
@@ -487,26 +492,26 @@ public:
                 if (c.kind == "browse") {
                     if(c.key.starts_with("server:")){
                         relay.roomCommand("select:"+c.key.substr(7));
-                        if(!relay.modelChoices().contains(c.key)){uiMessage="正在优先下载此模型，完成后可预览";continue;}
+                        if(!relay.modelChoices().contains(c.key)){uiMessage=gameText("正在优先下载此模型，完成后可预览", "Downloading this model first. Preview will be available when ready.");continue;}
                     }
                     requestBrowse(BrowseKind::Catalog, c.key);
                 } else if(c.kind=="room"){
                     if(c.key=="folder" || c.key=="settings"){
                         auto path=self->getModDir()/(c.key=="folder"?"room-share":"room-sync.json");
                         auto result=ShellExecuteW(nullptr,L"open",path.c_str(),nullptr,nullptr,SW_SHOWNORMAL);
-                        if(reinterpret_cast<std::intptr_t>(result)<=32)uiMessage="无法打开房间文件";
+                        if(reinterpret_cast<std::intptr_t>(result)<=32)uiMessage=gameText("无法打开房间文件", "Could not open room file");
                     } else relay.roomCommand(c.key);
                 }
                 else if (c.kind == "open_models_folder") {
-                    if (!library) { uiMessage = "模型库尚未就绪"; continue; }
+                    if (!library) { uiMessage = gameText("模型库尚未就绪", "Model library is not ready"); continue; }
                     auto folder = std::filesystem::absolute(library->root());
                     std::filesystem::create_directories(folder);
                     auto result = ShellExecuteW(nullptr, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-                    uiMessage = reinterpret_cast<std::intptr_t>(result) <= 32 ? "无法打开模型文件夹" : "";
+                    uiMessage = reinterpret_cast<std::intptr_t>(result) <= 32 ? gameText("无法打开模型文件夹", "Could not open model folder") : "";
                 }
                 else if (c.kind == "import_file" || c.kind == "import_folder") {
-                    // A native dialog can temporarily move Bedrock to its pause screen.
-                    // Keep the import alive and restore the menu when the HUD is available.
+                     
+                     
                     returnAfterPicker = true;
                     requestBrowse(c.kind == "import_file" ? BrowseKind::ImportFile : BrowseKind::ImportFolder);
                 }
@@ -518,12 +523,12 @@ public:
                 else if (c.kind == "toggle") toggleRequested = true;
                 else if (c.kind == "texture") { invalidateModelLoad(); cycleTexture(client, player, c.key); }
                 else if (c.kind == "extra") {
-                    if (!runtime.isActive()) uiMessage = "请先启用模型";
-                    else if (!animation.playExtra(c.key)) uiMessage = "模型没有提供这个动作片段";
-                    else if (uiSettings.value("print_animation_roulette_msg", true)) client.getGuiData()->setActionBarMessage("额外动作：" + c.key, std::nullopt);
+                    if (!runtime.isActive()) uiMessage = gameText("请先启用模型", "Enable a model first");
+                    else if (!animation.playExtra(c.key)) uiMessage = gameText("模型没有提供这个动作片段", "This model does not provide that animation");
+                    else if (uiSettings.value("print_animation_roulette_msg", true)) client.getGuiData()->setActionBarMessage(gameText("额外动作：", "Emote: ") + (pack ? localizedEmote(pack->descriptor, modelLanguage(pack->languages, client.getOptions().getLanguage()), modelLocale(client.getOptions().getLanguage()), c.key) : c.key), std::nullopt);
                 } else if (c.kind == "stop") animation.stopExtra();
                 else if (c.kind == "form") {
-                    if (!runtime.isActive() || !animation.modelUiAction(c.key, c.value, c.label)) uiMessage = "模型设置未生效，请启用模型后重试";
+                    if (!runtime.isActive() || !animation.modelUiAction(c.key, c.value, c.label)) uiMessage = gameText("模型设置未生效，请启用模型后重试", "Model settings were not applied. Enable the model and retry.");
                 } else if (c.kind == "favorite") {
                     auto& list = uiSettings["favorites"]; auto i = std::find(list.begin(), list.end(), c.key);
                     if (i != list.end()) list.erase(i); else if (list.size() < 1024) list.push_back(c.key); saveUiSettings();
@@ -537,7 +542,9 @@ public:
                     saveUiSettings();
                 } else if (c.kind == "setting" && uiSettings.contains(c.key) && !uiSettings.at(c.key).is_array()) {
                     if (c.key == "sound_volume") uiSettings[c.key] = std::clamp(static_cast<int>(c.value), 0, 100);
-                    else if (c.key=="hud_fps") uiSettings[c.key]=std::clamp(static_cast<int>(c.value),5,30);
+                    else if (c.key=="menu_theme" || c.key=="preview_quality" || c.key=="preview_fps")
+                        uiSettings[c.key]=std::clamp(static_cast<int>(c.value),c.key=="preview_fps"?15:0,c.key=="menu_theme"?3:c.key=="preview_quality"?2:60);
+                    else if (c.key=="hud_fps") uiSettings[c.key]=std::clamp(static_cast<int>(c.value),5,60);
                     else if (c.key.starts_with("hud_")) uiSettings[c.key] = std::clamp(static_cast<int>(c.value), 0, 100);
                     else uiSettings[c.key] = c.value != 0;
                     if (c.key == "arke_extra_emissive_layer") {
@@ -551,13 +558,14 @@ public:
                     if (c.key == "disable_other_models")
                         relay.setVisibility(uiSettings.at(c.key).get<bool>(), uiSettings.at("hidden_players"));
                     targetResources.presentation(!uiSettings.value("disable_vehicle_model", false), !uiSettings.value("disable_projectile_model", false));
-                    saveUiSettings();
+                    if (uiSettings.at(c.key).is_number()) settingsSaveAt=std::chrono::steady_clock::now()+std::chrono::milliseconds(300);
+                    else saveUiSettings();
                 } else if (c.kind == "link" && c.key.size() < 2048 && (c.key.starts_with("https://") || c.key.starts_with("http://"))) {
-                    // Only an explicit click on author-supplied HTTP(S) links.
+                     
                     auto wide = std::filesystem::path(std::u8string(c.key.begin(), c.key.end())).wstring();
                     ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                 }
-            } catch (std::exception const& error) { uiMessage = "操作失败，当前模型已保留"; self->getLogger().warn("UI action failed: {}", error.what()); }
+            } catch (std::exception const& error) { uiMessage = gameText("操作失败，当前模型已保留", "Action failed. Current model retained."); self->getLogger().warn("UI action failed: {}", error.what()); }
         }
     }
     void renderFirstPerson(BaseActorRenderContext& context, std::function<void()> const& draw) {
@@ -692,7 +700,7 @@ public:
         relay.prepareForRender(data, component);
         if (targetRenderingEnabled) targetResources.prepareFrame(*component.mRenderParams,
             self->getModDir() / "target-render-probe-status.json");
-        if (runtime.isActive() && lastPlayer && (data.mIsInUI || UiRenderContextTracker::isActive()) && uiRenderContexts.size() < 8) {
+        if (debugOverlay && runtime.isActive() && lastPlayer && (data.mIsInUI || UiRenderContextTracker::isActive()) && uiRenderContexts.size() < 8) {
             uiRenderContexts.push_back({{"same_actor", data.mActor == lastPlayer},
                 {"native_ui_flag", static_cast<bool>(data.mIsInUI)}, {"ui_context", UiRenderContextTracker::isActive()},
                 {"same_component", &component == &lastPlayer->getAnimationComponent()},
@@ -771,8 +779,8 @@ public:
     bool drawTarget(ActorRenderer& original, BaseActorRenderContext& context, ActorRenderData& data) {
         static thread_local unsigned depth = 0;
         if (depth || !data.mActor || !targetRenderingEnabled) return false;
-        // A renderer retained by the game can enter draw without a fresh
-        // dispatcher lookup after the host confirmed the owner.
+         
+         
         if (data.mActor->hasType(ActorType::AbstractArrow)) targetResources.observeProjectile(*data.mActor);
         if (!targetResources.hasActiveTarget(*data.mActor)) return false;
         auto borrowed = std::shared_ptr<ActorRenderer>(&original, [](ActorRenderer*) {});
@@ -876,8 +884,8 @@ public:
             });
             return false;
         });
-        // A valid game handle may still be loading. Keep its author ownership
-        // until playback completes or an explicit scope/ID stop cancels it.
+         
+         
         for (auto const& [cue, result] : reports) recordAudio(client, cue, result);
     }
     void playModelAudio(IClientInstance& client, ModelPack const& model, WeakEntityRef const& entity, std::span<SoundCue const> cues,
@@ -997,6 +1005,8 @@ public:
         }
     }
     void tick(IClientInstance& client) {
+        if(settingsSaveAt && std::chrono::steady_clock::now()>=*settingsSaveAt)saveUiSettings();
+        setGameLanguage(client.getOptions().getLanguage());
         auto* player = client.getLocalPlayer();
         if (!player) {
             if (lastPlayer) { resetBrowse(); resetModelParticleTransitions(); }
@@ -1048,8 +1058,8 @@ public:
                 observeShoulderPassengers(*player, targetResources);
             }
         }
-        // Menu transitions may consume a key release. Forget modifiers
-        // before gameplay resumes rather than carrying a stuck shortcut.
+         
+         
         if (client.getTopScreenName() != "hud_screen") keys.reset();
         if (toggleRequested.exchange(false)) {
             if (client.getTopScreenName() != "hud_screen") return;
@@ -1091,7 +1101,7 @@ public:
         if (runtime.isActive() && library && !relay.canSelect(library->source())) {
             endModel(client, *player);
             runtime.restore(client, *player);
-            uiMessage = "服务器模型已离线";
+            uiMessage = gameText("服务器模型已离线", "Server model is offline");
         }
         dispatchAnimationEffects(client, *player);
         refreshUi(client);
@@ -1115,17 +1125,17 @@ public:
             }
             else endModel(client, player);
             self->getLogger().error("Cannot switch texture: {}", error.what());
-            client.getGuiData()->setActionBarMessage("纹理切换失败，保留原纹理", std::nullopt);
+            client.getGuiData()->setActionBarMessage(gameText("纹理切换失败，保留原纹理", "Texture change failed. Previous texture retained."), std::nullopt);
             return;
         }
         auto const& name = pack->currentTexture().name;
-        client.getGuiData()->setActionBarMessage("纹理：" + name, std::nullopt);
+        client.getGuiData()->setActionBarMessage(gameText("纹理：", "Texture: ") + localizedModelText(modelLanguage(pack->languages, client.getOptions().getLanguage()), modelLocale(client.getOptions().getLanguage()), "files.player.texture." + name, name), std::nullopt);
         std::ofstream(self->getModDir() / "inspection.json") << pack->summary().dump(2);
         try {
             if (library) { library->rememberTexture(*pack); library->save(); }
         } catch (std::exception const& error) {
             self->getLogger().error("Texture applied but selection could not be saved: {}", error.what());
-            client.getGuiData()->setActionBarMessage("纹理已切换，但选择保存失败", std::nullopt);
+            client.getGuiData()->setActionBarMessage(gameText("纹理已切换，但选择保存失败", "Texture changed, but the selection could not be saved"), std::nullopt);
         }
         self->getLogger().info("Selected texture: {}", name);
     }
@@ -1153,7 +1163,7 @@ public:
         if (!library) return;
         if (modelJob || pendingModel) {
             if (!target.empty()) { invalidateModelLoad(); queuedModel = LoadRequest{std::move(target), wear}; return; }
-            client.getGuiData()->setActionBarMessage("正在读取模型，请稍候", std::nullopt);
+            client.getGuiData()->setActionBarMessage(gameText("正在读取模型，请稍候", "Loading model…"), std::nullopt);
             return;
         }
         std::stop_source cancellation;
@@ -1180,10 +1190,10 @@ public:
                 return result;
             });
             modelJob.emplace(ModelJob{std::move(task), std::move(cancellation), selectionEpoch});
-            client.getGuiData()->setActionBarMessage("正在读取下一个模型…", std::nullopt);
+            client.getGuiData()->setActionBarMessage(gameText("正在读取下一个模型…", "Loading next model…"), std::nullopt);
         } catch (std::exception const& error) {
             self->getLogger().error("Cannot start model preparation: {}", error.what());
-            client.getGuiData()->setActionBarMessage("模型读取未能开始", std::nullopt);
+            client.getGuiData()->setActionBarMessage(gameText("模型读取未能开始", "Could not start loading model"), std::nullopt);
         }
     }
     void pollModelLoad(IClientInstance& client, Player* player) {
@@ -1197,27 +1207,27 @@ public:
                     else {
                         for (auto const& message : candidate.choice.diagnostics) self->getLogger().warn("{}", message);
                         library->observe(candidate.choice);
-                        uiMessage = "模型读取失败，保留当前模型";
+                        uiMessage = gameText("模型读取失败，保留当前模型", "Model load failed. Current model retained.");
                         std::ofstream(self->getModDir() / "model-library.json") << library->report().dump(2);
-                        if (client.getTopScreenName() == "hud_screen") client.getGuiData()->setActionBarMessage("没有其他可用模型", std::nullopt);
+                        if (client.getTopScreenName() == "hud_screen") client.getGuiData()->setActionBarMessage(gameText("没有其他可用模型", "No other models available"), std::nullopt);
                     }
                 }
             } catch (std::exception const& error) {
                 modelJob.reset();
                 self->getLogger().error("Model preparation failed: {}", error.what());
                 if (epoch == selectionEpoch && player && client.getTopScreenName() == "hud_screen")
-                    client.getGuiData()->setActionBarMessage("模型读取失败，保留当前选择", std::nullopt);
+                    client.getGuiData()->setActionBarMessage(gameText("模型读取失败，保留当前选择", "Model load failed. Current selection retained."), std::nullopt);
             }
         }
         if (!pendingModel || !player || player != lastPlayer || client.getTopScreenName() != "hud_screen") return;
         auto candidate = std::move(*pendingModel);
         pendingModel.reset();
-        if (!relay.canSelect(candidate.choice.source)) { uiMessage = "服务器模型已离线"; return; }
+        if (!relay.canSelect(candidate.choice.source)) { uiMessage = gameText("服务器模型已离线", "Server model is offline"); return; }
         try {
             publishModel(client, *player, *candidate.choice.pack, std::move(candidate.animations), candidate.wear);
         } catch (std::exception const& error) {
             self->getLogger().error("Cannot publish prepared model: {}", error.what());
-            client.getGuiData()->setActionBarMessage("模型启用失败，保留原选择", std::nullopt);
+            client.getGuiData()->setActionBarMessage(gameText("模型启用失败，保留原选择", "Could not enable model. Previous selection retained."), std::nullopt);
             return;
         }
         library = std::move(candidate.library);
@@ -1237,11 +1247,11 @@ public:
         } catch (std::exception const& error) {
             self->getLogger().warn("Model applied but diagnostics could not be recorded: {}", error.what());
         }
-        client.getGuiData()->setActionBarMessage("模型：" + library->source(), std::nullopt);
+        client.getGuiData()->setActionBarMessage(gameText("模型：", "Model: ") + localizedModelText(modelLanguage(pack->languages, client.getOptions().getLanguage()), modelLocale(client.getOptions().getLanguage()), "metadata.name", pack->descriptor.at("metadata").value("name", library->source())), std::nullopt);
         try { library->save(); }
         catch (std::exception const& error) {
             self->getLogger().error("Model applied but selection could not be saved: {}", error.what());
-            client.getGuiData()->setActionBarMessage("模型已切换，但选择保存失败", std::nullopt);
+            client.getGuiData()->setActionBarMessage(gameText("模型已切换，但选择保存失败", "Model changed, but the selection could not be saved"), std::nullopt);
         }
     }
     void publishModel(IClientInstance& client, Player& player, ModelPack const& incoming, AnimationRuntime::Prepared prepared, bool wear = false) {
@@ -1251,21 +1261,21 @@ public:
         try {
             drainRoaming(animation);
             auto info = AnimationRuntime::roamingPreparation(prepared);
-            // The port currently has a LOCAL model session (no YSM channel).
-            // Establish its baseline only after native publication succeeds.
+             
+             
             auto restore = roaming.prepare(incoming.localContentKey, std::move(info.installation), std::move(info.fields), true);
             AnimationRuntime::restoreRoaming(prepared, restore.values());
             previous.start(std::move(prepared));
             animation.swap(previous);
             swapped = true;
             animation.setHostInputs(keys.glfwKeys(), client.getTopScreenName() == "hud_screen", modVersions);
-            // Register before skin publication, then reconcile a component
-            // rebuilt by the native skin system. Native objects stay on this thread.
+             
+             
             animation.attach(player);
             runtime.apply(client, player, incoming, {}, animation.skinGeometry());
             publishedSkin = true;
-            // Different packages can share geometry and pixels. The skin fast
-            // path then has no upload hook to populate this fresh animation owner.
+             
+             
             animation.setRenderTexture(runtime.renderTexture(), runtime.textureName());
             animation.attach(player);
             roaming.activate(std::move(restore));
@@ -1296,6 +1306,7 @@ public:
         }
     }
     bool disable() {
+        if(settingsSaveAt)saveUiSettings();
         if (auto client = ll::service::getClientInstance()) ui.close(&*client);
         NativeMenuTouch::shutdown();
         if (mouseListener) ll::event::EventBus::getInstance().removeListener(mouseListener);
@@ -1307,8 +1318,8 @@ public:
         weatherListeners.clear();
         keys.reset();
         invalidateModelLoad();
-        // No frame waits for loading. Unload must join the worker before this
-        // DLL's code and the CPU resources it owns can be released.
+         
+         
         if (modelJob) { modelJob->future.wait(); modelJob.reset(); }
         resetBrowse();
         if (browseJob.valid()) { browseJob.wait(); browseJob = {}; }
@@ -1477,16 +1488,16 @@ LL_TYPE_INSTANCE_HOOK(TargetActorSpawnHook, ll::memory::HookPriority::Normal, Le
     static_cast<void (LegacyClientNetworkHandler::*)(NetworkIdentifier const&, AddActorPacket const&)>(&LegacyClientNetworkHandler::$handle),
     void, NetworkIdentifier const& source, AddActorPacket const& packet) {
     origin(source, packet);
-    // Java's client recreates the entity from its spawn packet and calls
-    // AbstractArrow.setOwner there. The simulation's launch uses an older
-    // hand slot when the shooter switches slots in the same tick.
+     
+     
+     
     if (auto* level = mClient.getLevel())
         if (auto* actor = level->fetchEntity(*packet.mEntityId, false))
             Mod::getInstance().recordClientActorSpawn(*actor, mClient.getLocalPlayer());
 }
-// These renderers can be retained outside the dispatcher lookup. Include the
-// first distinguishing instructions from each render vtable entry on 1.26.60.05.
-// The shared prologues also occur in unrelated render routines.
+ 
+ 
+ 
 static auto const TargetDataDrawSignature = ll::memory::Signature::parse(
     "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC C8 01 00 00 48 8D AC 24 80 00 00 00 "
     "44 0F 29 BD 30 01 00 00 44 0F 29 B5 20 01 00 00 44 0F 29 AD 10 01 00 00 44 0F 29 A5 00 01 00 00 "
@@ -1550,8 +1561,8 @@ LL_TYPE_INSTANCE_HOOK(UiContextDestroyHook, ll::memory::HookPriority::Normal, Mi
 LL_TYPE_INSTANCE_HOOK(SetupAttachableHook, ll::memory::HookPriority::Normal, DataDrivenModel,
     &DataDrivenModel::setupAttachable, void, ItemStack const& item, AttachableSlotIndex const& slot, RenderParams& params, Actor& actor) {
     HeldItemBoneScope items(params);
-    // The slot must process item changes even during a hidden animation
-    // frame. Only the draw call may be suppressed by the locator mask.
+     
+     
     origin(item, slot, params, actor);
     bindAttachableParent(params, slot, item, actor);
 }
@@ -1580,7 +1591,7 @@ LL_TYPE_INSTANCE_HOOK(BoneVisualMeshHook, ll::memory::HookPriority::Normal, Skin
     std::optional<glm::mat4> const& previous, std::optional<MERSUniformData> const& mers,
     ShadowContext shadow, bool dithering) {
     if (skipCollapsedYsmMesh(*this)) return;
-    // Timing all vanilla and model meshes adds overhead to the hot path.
+     
     thread_local std::uint32_t drawCount = 0;
     bool measure = (++drawCount & 63) == 0;
     auto started = measure ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
@@ -1602,8 +1613,8 @@ LL_TYPE_INSTANCE_HOOK(BoneVisualMeshHook, ll::memory::HookPriority::Normal, Skin
         std::chrono::duration<double, std::micro>(lookedUp - started).count(),
         std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - lookedUp).count());
 }
-// Another renderer may already own the entry detour. Resolve the native
-// function from its interior and verify the entry using Windows unwind data.
+ 
+ 
 static uintptr_t surfaceRouteEntry() {
     static auto const interior = ll::memory::Signature::parse(
         "4C 8B 51 08 4D 85 D2 0F 84 FB 00 00 00 49 8B 00 48 85 C0 0F 84 EF 00 00 00 4D 8B 42 38 4D 8B 5A 40 4D 29 C3");
@@ -1613,7 +1624,7 @@ static uintptr_t surfaceRouteEntry() {
     auto function = RtlLookupFunctionEntry(address, &base, nullptr);
     if (!function || base != reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr))) return 0;
     auto entry = base + function->BeginAddress;
-    constexpr uintptr_t interiorOffset = 25; // 1.26.60.05 x64 unwind entry to the first stable load
+    constexpr uintptr_t interiorOffset = 25;  
     return address == entry + interiorOffset ? entry : 0;
 }
 static uintptr_t surfaceRouteAddress = 0;
@@ -1659,7 +1670,7 @@ static std::unique_ptr<ArrowDamageHooks> arrowDamageHooks;
 static void installHooks() {
     hooks = std::make_unique<Hooks>();
     entityStorageHooks = std::make_unique<EntityStorageHooks>();
-    // Optional native diagnostics must not make unsupported clients fail load.
+     
     if (TargetDataDrawSignature.view().resolve(true)) targetDataDrawHooks = std::make_unique<TargetDataDrawHooks>();
     if (Mod::getInstance().usesTargetRendering()) {
         if (TargetBoatDrawSignature.view().resolve(true)) targetBoatDrawHooks = std::make_unique<TargetBoatDrawHooks>();

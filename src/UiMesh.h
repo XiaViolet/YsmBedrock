@@ -10,6 +10,7 @@ struct UiVertex { float x,y; std::uint32_t color; };
 inline constexpr std::size_t uiBatchVertices = 24576;
 std::vector<UiVertex> buildUiMesh(std::span<UiPaint const> paint);
 std::size_t uiMeshBatches(std::size_t vertices);
+std::uint64_t uiShapeKey(std::span<UiPaint const> paint);
 class UiFrameGate {
     std::atomic<std::uint64_t> frame{1}, submitted{0};
 public:

@@ -17,6 +17,11 @@ glm::dvec3 triple(Json const& j,glm::dvec3 fallback={0,0,0}) {
     if(!j.is_array()||j.size()!=3)return fallback;
     for(int i=0;i<3;++i)if(j[i].is_number())fallback[i]=j[i].get<double>();return fallback;
 }
+Json const& field(Json const& object,char const* name) {
+    static const Json empty;
+    auto it=object.find(name);
+    return it==object.end()?empty:*it;
+}
 glm::dvec3 vec(Triple const& a){return {a[0],a[1],a[2]};}
 glm::dvec2 texturePair(Json const& value) {
     if (!value.is_array() || value.size() < 2 || !value[0].is_number() || !value[1].is_number()) return {};
@@ -24,7 +29,7 @@ glm::dvec2 texturePair(Json const& value) {
 }
 glm::dvec3 sourcePoint(glm::dvec3 p){return {-p.x,p.y,p.z};}
 glm::dvec3 sourceAngle(glm::dvec3 r){return {-r.x,-r.y,r.z};}
-glm::dmat4 rotate(glm::dvec3 r){constexpr double rad=3.141592653589793/180;glm::dmat4 m(1);for(int i=2;i>=0;--i){glm::dvec3 axis(0);axis[i]=1;m=glm::rotate(m,r[i]*rad,axis);}return m;}
+glm::dmat4 rotate(glm::dvec3 r){constexpr double rad=3.141592653589793/180;glm::dmat4 m(1);for(int i=2;i>=0;--i){if(r[i]==0)continue;glm::dvec3 axis(0);axis[i]=1;m=glm::rotate(m,r[i]*rad,axis);}return m;}
 struct Face {glm::dvec3 p[4];glm::dvec2 uv[4];double light;BoneVisual visual;TextureImage const* image;double tw,th;};
 void composite(TextureImage& target, TextureImage const& layer) {
     for (std::size_t y = 0; y < target.height; ++y) {
@@ -109,15 +114,16 @@ ModelPreview::GeometryFrame ModelPreview::collect(std::string const& clip, doubl
         std::function<glm::dmat4(std::string const&)> world=[&](std::string const& name)->glm::dmat4 {
             if(auto f=transforms.find(name);f!=transforms.end())return f->second;
             if(!byName.contains(name)||!visiting.insert(name).second)return glm::dmat4(1);
-            auto const& b=*byName.at(name);auto pivot=sourcePoint(triple(b.value("pivot",Json::array())));auto r=sourceAngle(triple(b.value("rotation",Json::array())));auto pos=glm::dvec3(0),scale=glm::dvec3(1);
+            auto const& b=*byName.at(name);auto pivot=sourcePoint(triple(field(b,"pivot")));auto r=sourceAngle(triple(field(b,"rotation")));auto pos=glm::dvec3(0),scale=glm::dvec3(1);
             if(auto p=pose.find(name);p!=pose.end()){pos=sourcePoint(vec(p->second.position));r+=sourceAngle(vec(p->second.rotation));scale=vec(p->second.scale);}
             auto m=glm::translate(glm::dmat4(1),pivot+pos)*rotate(r)*glm::scale(glm::dmat4(1),scale)*glm::translate(glm::dmat4(1),-pivot);
-            if(b.contains("parent"))m=world(b["parent"].get<std::string>())*m;
+            if(b.contains("parent"))m=world(b["parent"].get_ref<std::string const&>())*m;
             visiting.erase(name);transforms[name]=m;return m;
         };
-        auto const& description = model.value("description", Json::object());
-        double tw = geometryTextureDimension(description, "texture_width");
-        double th = geometryTextureDimension(description, "texture_height");
+        auto const& description = field(model,"description");
+        static const Json emptyDescription = Json::object();
+        double tw = geometryTextureDimension(description.is_object()?description:emptyDescription, "texture_width");
+        double th = geometryTextureDimension(description.is_object()?description:emptyDescription, "texture_height");
         constexpr int indices[6][4]={{6,7,4,5},{3,2,1,0},{7,3,0,4},{2,6,5,1},{7,6,2,3},{0,1,5,4}};
         constexpr char const* faceNames[]={"south","north","west","east","up","down"};
         constexpr int mirroredFaces[2][6]={{0,1,3,2,4,5},{0,1,3,2,5,4}};
@@ -158,7 +164,7 @@ ModelPreview::GeometryFrame ModelPreview::collect(std::string const& clip, doubl
                     }
                     if (!valid) continue;
                     auto normal = glm::cross(face.p[1] - face.p[0], face.p[2] - face.p[0]);
-                    if (glm::length(normal) < 1.e-8 || faces.size() >= 200000) continue;
+                    if (glm::dot(normal,normal) < 1.e-16 || faces.size() >= 200000) continue;
                     for (auto const& point : face.p) {
                         low = glm::min(low, glm::dvec2(point.x, point.y));
                         high = glm::max(high, glm::dvec2(point.x, point.y));
@@ -174,17 +180,17 @@ ModelPreview::GeometryFrame ModelPreview::collect(std::string const& clip, doubl
             bool boneMirror = b.value("mirror", false);
             for(auto const& cube:*cubes) {
                 bool oneSided = ((player && forceCutout) || signedClosedCube(cube, boneInflate)) && visual.alpha == 255 && visual.color == BoneVisual{}.color;
-                auto origin=triple(cube.value("origin",Json::array())),dimensions=triple(cube.value("size",Json::array()));
+                auto origin=triple(field(cube,"origin")),dimensions=triple(field(cube,"size"));
                 // The cube overrides its owning bone, including an explicit zero.
                 auto inflateField = cube.find("inflate");
                 double inflate = inflateField != cube.end() && inflateField->is_number()
                     ? inflateField->get<double>() : boneInflate;
                 auto minimum = origin - glm::dvec3(inflate);
                 auto maximum = origin + dimensions + glm::dvec3(inflate);
-                auto cp=sourcePoint(triple(cube.value("pivot",Json::array())));auto cm=m*glm::translate(glm::dmat4(1),cp)*rotate(sourceAngle(triple(cube.value("rotation",Json::array()))))*glm::translate(glm::dmat4(1),-cp);
+                auto cp=sourcePoint(triple(field(cube,"pivot")));auto cm=m*glm::translate(glm::dmat4(1),cp)*rotate(sourceAngle(triple(field(cube,"rotation"))))*glm::translate(glm::dmat4(1),-cp);
                 glm::dvec3 v[8]={{minimum.x,minimum.y,minimum.z},{maximum.x,minimum.y,minimum.z},{maximum.x,maximum.y,minimum.z},{minimum.x,maximum.y,minimum.z},{minimum.x,minimum.y,maximum.z},{maximum.x,minimum.y,maximum.z},{maximum.x,maximum.y,maximum.z},{minimum.x,maximum.y,maximum.z}};
                 for(auto& p:v)p=glm::dvec3(cm*glm::dvec4(sourcePoint(p),1));
-                auto uv=cube.value("uv",Json::array());
+                auto const& uv=field(cube,"uv");
                 bool perFace=uv.is_object(), cubeMirror=cube.value("mirror", false);
                 bool mirrorLayout=boneMirror || cubeMirror;
                 auto offset=texturePair(uv);
@@ -197,16 +203,16 @@ ModelPreview::GeometryFrame ModelPreview::collect(std::string const& clip, doubl
                     if(perFace) {
                         auto authored=uv.find(faceNames[layout]);
                         if(authored==uv.end()||!authored->is_object())continue;
-                        auto pos=texturePair(authored->value("uv",Json::array()));
+                        auto pos=texturePair(field(*authored,"uv"));
                         // The 2.6.5 preview samples the UV origin if the size is omitted.
-                        auto sz=texturePair(authored->value("uv_size",Json::array()));
+                        auto sz=texturePair(field(*authored,"uv_size"));
                         u0=pos.x;v0=pos.y;uw=sz.x;vh=sz.y;
                     }
                     Face face;for(int i=0;i<4;++i)face.p[i]=v[indices[f][i]];
                     // Hidden scale-zero bones have no drawable surface. Their
                     // distant pivots must not shrink the visible character.
                     auto cross=glm::cross(face.p[1]-face.p[0],face.p[3]-face.p[0]);
-                    if(glm::length(cross)<1.e-8 || (oneSided && cross.z >= 0))continue;
+                    if(glm::dot(cross,cross)<1.e-16 || (oneSided && cross.z >= 0))continue;
                     for(auto const& point:face.p){low=glm::min(low,glm::dvec2(point.x,point.y));high=glm::max(high,glm::dvec2(point.x,point.y));}
                     auto u1=u0+uw;
                     if(cubeMirror)std::swap(u0,u1);
@@ -220,7 +226,7 @@ ModelPreview::GeometryFrame ModelPreview::collect(std::string const& clip, doubl
                 auto name = side == 0 ? "LeftShoulderLocator" : "RightShoulderLocator";
                 auto it = byName.find(name);
                 if (it == byName.end()) continue;
-                auto pivot = sourcePoint(triple(it->second->value("pivot", Json::array())));
+                auto pivot = sourcePoint(triple(field(*it->second,"pivot")));
                 mounts[side] = glm::translate(transformRoot * world(name), pivot);
             }
         }

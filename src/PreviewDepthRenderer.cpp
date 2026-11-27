@@ -72,6 +72,7 @@ struct PreviewDepthRenderer::Impl {
     ComPtr<ID3D11ShaderResourceView> atlas;
     std::weak_ptr<TextureImage const> lastSkin;
     unsigned side = 0;
+    bool skinTranslucent = false;
 
     Impl() {
         check(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION,
@@ -143,6 +144,8 @@ struct PreviewDepthRenderer::Impl {
             skin->rgba.size() != size_t(skin->width) * skin->height * 4)
             throw std::runtime_error("Invalid preview skin");
         if (lastSkin.lock() == skin) return;
+        skinTranslucent=false;
+        for(std::size_t i=3;i<skin->rgba.size();i+=4) if(skin->rgba[i]>0 && skin->rgba[i]<255){skinTranslucent=true;break;}
         auto desc = textureDesc(skin->width, skin->height, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE);
         desc.Usage = D3D11_USAGE_IMMUTABLE;
         D3D11_SUBRESOURCE_DATA source{skin->rgba.data(), skin->width * 4, 0};
@@ -159,10 +162,10 @@ struct PreviewDepthRenderer::Impl {
         UINT bytes = static_cast<UINT>(data.size_bytes());
         if (bytes > capacity) {
             D3D11_BUFFER_DESC desc{};
-            desc.ByteWidth = bytes; desc.Usage = D3D11_USAGE_DYNAMIC; desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+            desc.ByteWidth = static_cast<UINT>(std::min<std::uint64_t>(std::numeric_limits<UINT>::max(), std::max<std::uint64_t>(bytes, std::uint64_t(capacity) + capacity / 2 + 4096))); desc.Usage = D3D11_USAGE_DYNAMIC; desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
             desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
             check(device->CreateBuffer(&desc, nullptr, vertices.ReleaseAndGetAddressOf()), "vertex buffer");
-            capacity = bytes;
+            capacity = desc.ByteWidth;
         }
         D3D11_MAPPED_SUBRESOURCE mapped{};
         check(ctx->Map(vertices.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped), "vertex upload");
@@ -174,10 +177,12 @@ struct PreviewDepthRenderer::Impl {
         ctx->OMSetBlendState(nullptr, nullptr, UINT_MAX);
         ctx->PSSetShader(opaqueShader.Get(), nullptr, 0);
         ctx->Draw(static_cast<UINT>(data.size()), 0);
-        ctx->OMSetDepthStencilState(readDepth.Get(), 0);
-        ctx->OMSetBlendState(blend.Get(), nullptr, UINT_MAX);
-        ctx->PSSetShader(translucentShader.Get(), nullptr, 0);
-        ctx->Draw(static_cast<UINT>(data.size()), 0);
+        if (skinTranslucent || std::any_of(data.begin(),data.end(),[](auto const& vertex){auto alpha=vertex.color>>24;return alpha>0 && alpha<255;})) {
+            ctx->OMSetDepthStencilState(readDepth.Get(), 0);
+            ctx->OMSetBlendState(blend.Get(), nullptr, UINT_MAX);
+            ctx->PSSetShader(translucentShader.Get(), nullptr, 0);
+            ctx->Draw(static_cast<UINT>(data.size()), 0);
+        }
     }
 };
 

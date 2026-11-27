@@ -14,5 +14,6 @@ public:
     static std::shared_ptr<NativeTextureUpload> create(std::shared_ptr<mce::TextureGroup> const& group,
         ModelTexture const& texture, PbrEncoding encoding, std::string const& identity);
     NativeTextureSet textures() const;
+    bool updateColor(TextureImage const& image);
 };
 }

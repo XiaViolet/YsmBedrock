@@ -22,6 +22,7 @@ public:
     bool mouse(IClientInstance& client, int button, int value, float x, float y, float dx, float dy);
     bool isOpen() const;
     bool showsModels() const;
+    bool showsForms() const;
     void beginFrame();
     void retireLibraryPreview();
     bool suppressMouseCapture(IClientInstance const& client);
