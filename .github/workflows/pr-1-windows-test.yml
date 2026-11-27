@@ -7,8 +7,8 @@ permissions:
   contents: read
 jobs:
   build:
-    runs-on: windows-2022
-    timeout-minutes: 40
+    runs-on: windows-latest
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,6 +24,10 @@ jobs:
           $bin = Get-ChildItem C:\xm -Recurse -Filter xmake.exe | Select-Object -First 1
           if (!$bin) { throw 'xmake.exe missing' }
           $bin.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Match LeviLamina's LLVM 22 toolchain
+        uses: ZhongRuoyu/setup-llvm@eea6238baf53d41c1615923680d7a738da584318
+        with:
+          llvm-version: 22
       - name: Compile Windows x64
         shell: pwsh
         run: |
@@ -41,7 +45,13 @@ jobs:
           $archiveUrl = 'https://github.com/AOMediaCodec/libavif/archive/refs/tags/v$(version).tar.gz'
           if (!$original.Contains($sourceUrl)) { throw 'Unexpected libavif recipe' }
           [IO.File]::WriteAllText($recipe, $original.Replace($sourceUrl, $archiveUrl))
-          try { ./tools/build.ps1 } catch {
+          try {
+            clang-cl --version
+            xmake f -p windows -a x64 -m release -y -v
+            if ($LASTEXITCODE) { throw 'Configuration failed' }
+            xmake build -y YsmBedrock
+            if ($LASTEXITCODE) { throw 'Compilation failed' }
+          } catch {
             Get-ChildItem C:\c -Recurse -Filter install.txt -ErrorAction SilentlyContinue | Where-Object FullName -like '*installdir.failed*' | ForEach-Object {
               Write-Host $_.FullName
               Get-Content -LiteralPath $_.FullName -Tail 60
