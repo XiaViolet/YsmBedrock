@@ -1,0 +1,47 @@
+name: PR 1 Windows test package
+on:
+  push:
+    branches: [build/pr-1-windows-test]
+    paths: ['.github/workflows/pr-1-windows-test.yml']
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 6a570c3d6859866ec8ee478f598d25275661a9d3
+          persist-credentials: false
+      - name: Install xmake
+        shell: pwsh
+        run: |
+          choco install xmake -y --no-progress
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Compile Windows x64
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\ProgramData\chocolatey\bin;$env:PATH"
+          ./tools/build.ps1
+      - name: Assemble and validate a private test package
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri 'https://github.com/XiaViolet/YsmBedrock/releases/download/v0.29.44/YsmBedrock-0.29.44.mcmod' -OutFile (Join-Path $env:RUNNER_TEMP 'base.mcmod')
+          ./tools/package-localized.ps1 -BaseMod (Join-Path $env:RUNNER_TEMP 'base.mcmod') -OutputDirectory test-output
+          $mod = Get-ChildItem test-output -Filter '*.mcmod'
+          $zip = [IO.Compression.ZipFile]::OpenRead($mod.FullName)
+          try {
+            foreach ($file in @('manifest.json','YsmBedrock.dll','YsmLegacyV3.dll','models/ysm-magical-wine-fox.zip')) {
+              if (!$zip.GetEntry($file)) { throw "Missing $file" }
+            }
+          } finally { $zip.Dispose() }
+          Rename-Item -LiteralPath $mod.FullName -NewName 'YsmBedrock-0.29.44-PR1-test.mcmod'
+          Remove-Item test-output/*-BedrockBoot.zip
+          Get-FileHash test-output/*.mcmod | Format-List
+      - uses: actions/upload-artifact@v4
+        with:
+          name: YsmBedrock-0.29.44-PR1-test
+          path: test-output/*.mcmod
+          if-no-files-found: error
+          retention-days: 7
