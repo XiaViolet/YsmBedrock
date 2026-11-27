@@ -1,3 +1,4 @@
+#include "Localization.h"
 #include "NativeModelRelay.h"
 #include "NativeModelRelay.inl"
 #include "NativeShoulderParrot.h"
@@ -68,17 +69,17 @@ ModelPack loadRoomFile(std::filesystem::path const& path, RelayAsset const& asse
     return pack;
 }
 std::string stageLabel(std::string const& stage) {
-    static std::map<std::string,std::string> const labels{
-        {"waiting","等待下载"},{"awaiting_host","等房主收取"},{"downloading","下载中"},{"paused","下载已暂停"},
-        {"verifying","校验中"},{"cached","等待准备模型"},{"preparing","正在准备模型"},{"awaiting_actor","等待角色出现"},
-        {"awaiting_draw","等待角色绘制"},{"displayed","已显示"},{"vanilla","本机显示原版"},{"failed","失败"},
-        {"failed_download","下载或校验失败"},{"failed_prepare","准备模型失败"},{"failed_draw","绘制绑定失败"},
-        {"denied","房主已拒绝"},{"conflicting_archive","同一模型标识的文件不一致"},{"unreported","尚未回报"},{"unsupported","此版本不支持回报"},
-        {"failed: provider timed out","下载超时"},{"failed: upstream failed","房主收取失败"},
-        {"failed: file verification or storage failed","校验或写入缓存失败"},{"failed: source unavailable","模型来源不可用"},
-        {"failed: host is not acquiring this file","房主接收超时"},{"failed: invalid local cache","本机缓存读取失败"},
-        {"failed: invalid chunk length","收到的分块长度错误"},{"failed: denied","来源已拒绝传输"}};
-    auto it=labels.find(stage);return it==labels.end()?stage:it->second;
+    static std::map<std::string,std::pair<char const*,char const*>> const labels{
+        {"waiting",{"等待下载", "Waiting to download"}},{"awaiting_host",{"等房主收取", "Waiting for host"}},{"downloading",{"下载中", "Downloading"}},{"paused",{"下载已暂停", "Download paused"}},
+        {"verifying",{"校验中", "Verifying"}},{"cached",{"等待准备模型", "Waiting to prepare model"}},{"preparing",{"正在准备模型", "Preparing model"}},{"awaiting_actor",{"等待角色出现", "Waiting for player"}},
+        {"awaiting_draw",{"等待角色绘制", "Waiting for rendering"}},{"displayed",{"已显示", "Displayed"}},{"vanilla",{"本机显示原版", "Showing vanilla locally"}},{"failed",{"失败", "Failed"}},
+        {"failed_download",{"下载或校验失败", "Download or verification failed"}},{"failed_prepare",{"准备模型失败", "Model preparation failed"}},{"failed_draw",{"绘制绑定失败", "Render binding failed"}},
+        {"denied",{"房主已拒绝", "Denied by host"}},{"conflicting_archive",{"同一模型标识的文件不一致", "Files with the same model ID differ"}},{"unreported",{"尚未回报", "Not reported yet"}},{"unsupported",{"此版本不支持回报", "Reports unsupported in this version"}},
+        {"failed: provider timed out",{"下载超时", "Download timed out"}},{"failed: upstream failed",{"房主收取失败", "Host acquisition failed"}},
+        {"failed: file verification or storage failed",{"校验或写入缓存失败", "Verification or cache write failed"}},{"failed: source unavailable",{"模型来源不可用", "Model source unavailable"}},
+        {"failed: host is not acquiring this file",{"房主接收超时", "Host acquisition timed out"}},{"failed: invalid local cache",{"本机缓存读取失败", "Local cache read failed"}},
+        {"failed: invalid chunk length",{"收到的分块长度错误", "Invalid chunk length received"}},{"failed: denied",{"来源已拒绝传输", "Source denied transfer"}}};
+    auto it=labels.find(stage);return it==labels.end()?stage:gameText(it->second.first,it->second.second);
 }
 
 }
@@ -267,13 +268,13 @@ Json NativeModelRelay::roomInfo() const {
     if(view && impl->room.host() && impl->level){
         std::map<std::string,std::string> names;
         auto name=[&](std::string const& id){
-            if(id==impl->localXuid)return std::string("房主");
+            if(id==impl->localXuid)return std::string(gameText("房主", "Host"));
             auto [it,fresh]=names.try_emplace(id,id);
             if(fresh)if(auto* actor=roomActor(*impl->level,id))it->second=actor->getNameTag();
             return it->second;
         };
         for(auto const& [observer,subjects]:view->observers)for(auto const& [subject,report]:subjects)
-            observations.push_back(name(observer)+" 看 "+name(subject)+" · "+stageLabel(report.stage));
+            observations.push_back(name(observer)+gameText(" 看 ", " sees ")+name(subject)+" · "+stageLabel(report.stage));
     }
     return {{"host",impl->room.host()},{"active",view && view->connected},{"auto_receive",!view || view->autoReceive},
         {"upload_retry",view?view->uploadRetryTarget:std::string{}},{"upload_bps",view?view->uploadRate:0},{"download_bps",view?view->downloadRate:0},{"rate_limit",view?view->rateLimit:0},
@@ -315,7 +316,7 @@ Json NativeModelRelay::catalogRows() const {
     Json result = Json::array();
     if (impl->session.empty() || impl->left.load()) return result;
     for (auto const& [key, asset] : impl->latest.assets) if (asset.selectable)
-        result.push_back({{"source", "server:" + key}, {"name", asset.title}, {"author", "服务器"}, {"kind", "server"}, {"status", impl->native && impl->view && !impl->view->ready.contains(key) ? "downloading":"unloaded"}});
+        result.push_back({{"source", "server:" + key}, {"name", asset.title}, {"author", gameText("服务器", "Server")}, {"kind", "server"}, {"status", impl->native && impl->view && !impl->view->ready.contains(key) ? "downloading":"unloaded"}});
     return result;
 }
 bool NativeModelRelay::canSelect(std::string const& source) const {
@@ -336,7 +337,7 @@ Json NativeModelRelay::playerRows(Player const* local) const {
         if(!impl->view)return std::string{};
         auto found=impl->view->peerRates.find(id);
         if(found==impl->view->peerRates.end())return std::string{};
-        return std::format("上传 {:.0f} · 下载 {:.0f} KiB/s",found->second.upload/1024.,found->second.download/1024.);
+        return chineseGameLanguage() ? std::format("上传 {:.0f} · 下载 {:.0f} KiB/s",found->second.upload/1024.,found->second.download/1024.) : std::format("Up {:.0f} · Down {:.0f} KiB/s",found->second.upload/1024.,found->second.download/1024.);
     };
     for(auto const& [id,pose]:impl->latest.players){
         auto* actor=roomActor(local->getLevel(),id);
@@ -363,7 +364,7 @@ Json NativeModelRelay::playerRows(Player const* local) const {
         if(id==impl->localXuid || impl->latest.players.contains(id) || impl->view->peerStates.contains(id))continue;
         auto* actor=roomActor(local->getLevel(),id);
         if(actor && actor!=local)rows.push_back({{"id",id},{"name",actor->getNameTag()},{"hidden",impl->hiddenPlayers.contains(id)},
-            {"rates",roomRate(id)},{"state","正在传输房间模型"},{"key",""}});
+            {"rates",roomRate(id)},{"state",gameText("正在传输房间模型", "Transferring room models")},{"key",""}});
     }
     return rows;
 }
@@ -525,7 +526,7 @@ void NativeModelRelay::tick(IClientInstance& client, Player* player, ModelPack c
                 try { if (entry->skin.refreshIfReplaced(client,*actor)) ++data.skinReapplications; }
                 catch(std::exception const& error){data.error=error.what();data.status();}
             }
-            // The native skin system may rebuild this component after publication.
+             
             entry->animation.attach(*actor);
             if (!entry->worldPoseReported && entry->animation.hasWorldBodyPose()) {
                 entry->worldPoseReported = true;
@@ -691,7 +692,7 @@ std::vector<ModelEffects> NativeModelRelay::takeEffects(Player const& local) {
 void NativeModelRelay::updateEntityOwners(NativeReplacedResources& resources, Player const& local) const {
     std::vector<NativeReplacedResources::PeerOwner> owners;
     for (auto const& [id, peer] : impl->peers) {
-        // Previously bound projectiles still depend on this visible owner.
+         
         if (!peer->resources.model) continue;
         auto* player = roomActor(local.getLevel(), id);
         auto state = impl->latest.players.find(id);
@@ -725,8 +726,8 @@ void NativeModelRelay::prepareGeometry(RenderController& controller, std::shared
 void NativeModelRelay::updateTexture(IClientInstance& client, ClientSkinInfoData& skin, SerializedSkinRef const& serialized) {
     auto peers = impl->drawing.load(std::memory_order_acquire);
     if (peers) peers->forEachPeer([&](InstalledPeer& target) {
-        // A skin callback may run inside a render operation. Let the next
-        // actor preparation adopt the publication before evaluating its pose.
+         
+         
         if (target.skin.updateRenderTexture(client, skin, serialized)) target.textureChanged.store(true);
     });
 }

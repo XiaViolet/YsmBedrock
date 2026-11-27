@@ -1,5 +1,6 @@
 #include "WheelGeometry.h"
 #include "YsmUi.h"
+#include "ModelLocalization.h"
 #include <algorithm>
 #include <cmath>
 #include <cctype>
@@ -105,7 +106,7 @@ bool ModelUiBindings::act(MolangContext& context,std::string const& route,double
     auto found=forms.find(route); if(found==forms.end() || !std::isfinite(value) || context.observation)return false;
     auto const& form=found->second;
     if(label>=0 && (form.type!="radio" || static_cast<std::size_t>(label)>=form.labels.size()))return false;
-    // Same CONFIG_WRITE input as source ModelInfoBuilder: value=t.value.
+     
     MolangDeferredScope deferred(context,this); MolangActionScope actions(context,true);
     auto previous=context.localVariables.find("temp.value");
     std::optional<MolangValue> saved=previous==context.localVariables.end()?std::nullopt:std::optional(previous->second);
@@ -113,7 +114,7 @@ bool ModelUiBindings::act(MolangContext& context,std::string const& route,double
     else {
         if(form.type=="checkbox")value=value!=0?1:0;
         else if(form.type=="range") {
-            // ForgeSlider step=0 is a continuous range, including min=max.
+             
             value=std::clamp(value,form.min,form.max);
             if(form.step>0)value=std::clamp(form.min+std::round((value-form.min)/form.step)*form.step,form.min,form.max);
         }
@@ -132,15 +133,17 @@ std::set<std::string> ModelUiBindings::roamingFields() const {
 Json YsmUi::defaultSettings() { return {{"sound_volume",100},{"disable_self_model",false},{"disable_self_hands",false},
     {"disable_projectile_model",false},{"disable_vehicle_model",false},{"print_animation_roulette_msg",true},
     {"movement_lock",false},{"disable_other_models",false},{"show_hud_avatar",false},{"arke_extra_emissive_layer",false},{"native_menu_preview",true},{"relative_menu_pointer",false},
-    {"hud_fps",30},{"hud_x",12},{"hud_y",82},{"hud_size",40},{"hud_yaw",50},{"favorites",Json::array()},
+    {"hud_fps",60},{"hud_x",12},{"hud_y",82},{"hud_size",40},{"hud_yaw",50},{"favorites",Json::array()},
     {"hidden_players",Json::array()}}; }
 void YsmUi::update(UiSnapshot value) {
+    if (value == data) return;
+    sceneDirty = true;
     if(value.generation!=data.generation || value.source!=data.source) {
         categories={{"",0}};formButton.clear();formPage=texturePage=previewPage=infoPage=0;previewClip.clear();
         previewCamera={}; previewArea.reset(); previewDrag.reset();
         if(page==Page::Forms)page=Page::Roulette;
-        // Discard input queued for a retired model, including identical source
-        // names reloaded with a new private expression installation.
+         
+         
         commands.clear(); hits.clear(); ranges.clear(); dragging.reset(); focusId.clear();
     }
     if (data.browsing != value.browsing || data.browseLoading != value.browseLoading) {
@@ -148,10 +151,10 @@ void YsmUi::update(UiSnapshot value) {
     }
     data=std::move(value);
 }
-void YsmUi::open(bool wheel) { page=wheel?Page::Roulette:Page::Models;wheelHovered=-1;previewClip.clear();previewCamera={};searchFocused=false;hits.clear(); ranges.clear(); dragging.reset(); previewArea.reset(); previewDrag.reset(); focusId.clear(); }
-void YsmUi::close() {page=Page::Closed;searchFocused=false;hits.clear(); ranges.clear(); dragging.reset(); previewArea.reset(); previewDrag.reset(); focusId.clear();}
+void YsmUi::open(bool wheel) { sceneDirty=true; page=wheel?Page::Roulette:Page::Models;wheelHovered=-1;previewClip.clear();previewCamera={};searchFocused=false;hits.clear(); ranges.clear(); dragging.reset(); previewArea.reset(); previewDrag.reset(); focusId.clear(); }
+void YsmUi::close() {sceneDirty=true;page=Page::Closed;searchFocused=false;hits.clear(); ranges.clear(); dragging.reset(); previewArea.reset(); previewDrag.reset(); focusId.clear();}
 bool YsmUi::blocksMovement() const { return isOpen() && !isWheel(); }
-std::string YsmUi::local(std::string const& key,std::string fallback) const {return str(data.language,key.c_str(),std::move(fallback));}
+std::string YsmUi::local(std::string const& key,std::string fallback) const {return localizedModelText(data.language,data.locale,key,std::move(fallback));}
 void YsmUi::command(std::string kind,std::string key,double value,int label) {
     if(!commands.empty() && label<0 && (kind=="form"||kind=="setting") && commands.back().kind==kind && commands.back().key==key && commands.back().label<0)
         commands.back().value=value;
@@ -167,7 +170,7 @@ std::vector<YsmUi::WheelEntry> YsmUi::wheelEntries() const {
         std::string form;
         if(text.starts_with('#'))for(auto const& b:buttons(data.descriptor))if(str(b,"id")==text.substr(1)){form=str(b,"id");text=str(b,"name",key);break;}
         auto translationKey = "properties.extra_animation." + key;
-        result.push_back({key,local(translationKey,text.empty()?key:text),local(translationKey+".desc",{}),form});
+        result.push_back({key,localizedEmote(data.descriptor,data.language,data.locale,key,std::move(text)),local(translationKey+".desc",{}),form});
     }return result;
 }
 void YsmUi::chooseWheel(std::size_t slot) {
@@ -250,8 +253,9 @@ void YsmUi::activate(std::string const& id) {
     }
 }
 bool YsmUi::key(int key,bool down,bool control,std::string text,bool shift) {
+    sceneDirty = true;
     if(!isOpen())return false;
-    if(!down)return false; // release keys held before opening, avoiding stuck movement
+    if(!down)return false;  
     if(key==27){back();return true;}
     if(searchFocused && key==9)searchFocused=false;
     if(searchFocused) {
@@ -282,13 +286,16 @@ bool YsmUi::key(int key,bool down,bool control,std::string text,bool shift) {
     return true;
 }
 void YsmUi::cancelPointer() {
+    sceneDirty = true;
     mouseX = mouseY = -1;
     wheelHovered = -1;
     previewDrag.reset();
     dragging.reset();
 }
 bool YsmUi::mouse(int button,int value,float x,float y) {
-    if(!isOpen())return false;mouseX=x;mouseY=y;
+    if(!isOpen())return false;
+    if (button == 0 && x == mouseX && y == mouseY && !dragging && !previewDrag) return true;
+    sceneDirty = true;mouseX=x;mouseY=y;
     if (previewDrag && (button == 0 || button == previewDrag->button)) {
         auto& drag = *previewDrag;
         auto dx = x - drag.x, dy = y - drag.y;

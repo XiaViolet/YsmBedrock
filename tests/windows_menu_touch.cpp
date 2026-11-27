@@ -1,5 +1,5 @@
-// Windows reserves digitizer message IDs and handles. Compile this test copy
-// of the receiver with WM_APP equivalents and fixture digitizer metadata.
+ 
+ 
 #include <Windows.h>
 #include <future>
 #include <iostream>
@@ -65,6 +65,7 @@ int main() try {
     UiPointer cursor;
     YsmUi ui;
     UiSnapshot snapshot;
+    snapshot.locale="zh_cn";
     snapshot.settings=YsmUi::defaultSettings();
     snapshot.descriptor={{"properties",{{"extra_animation",{{"wave","招手"}}}}}};
     ui.update(snapshot); ui.open(false);

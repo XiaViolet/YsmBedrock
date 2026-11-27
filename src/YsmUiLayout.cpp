@@ -1,3 +1,4 @@
+#include "ModelLocalization.h"
 #include "WheelGeometry.h"
 #include "YsmUi.h"
 #include <algorithm>
@@ -48,10 +49,13 @@ struct Painter {
     UiScene& scene;
     void box(UiRect r,std::uint32_t color,float radius=0){if(r.w>0&&r.h>0)scene.paint.push_back({r,color,{},1,false,radius});}
     void border(UiRect r,std::uint32_t stroke,std::uint32_t fill,float radius=7,float weight=1){box(r,stroke,radius);box({r.x+weight,r.y+weight,r.w-weight*2,r.h-weight*2},fill,std::max(0.f,radius-weight));}
-    void text(float x,float y,float w,std::string value,std::uint32_t color=ink,float scale=1,bool center=false){scene.paint.push_back({{x,y,w,14*scale},color,std::move(value),scale,center});}
+    void text(float x,float y,float w,std::string value,std::uint32_t color=ink,float scale=1,bool center=false){
+        float estimated=0; for(std::size_t i=0;i<value.size();) { auto c=static_cast<unsigned char>(value[i]); estimated+=glyph(c);i+=std::min(stride(c),value.size()-i); }
+        if(estimated*scale>w && w>0) scale=std::max(scale*.68f,w/estimated);
+        if(estimated*scale>w && w>0) value=fit(value,w,scale);
+        scene.paint.push_back({{x,y,w,14*scale},color,std::move(value),scale,center});}
     void line(float x,float y,float xx,float yy,std::uint32_t color,float weight=1.4f){
-        auto distance=std::hypot(xx-x,yy-y);auto steps=std::max(1,static_cast<int>(distance));
-        for(int i=0;i<=steps;++i){auto f=static_cast<float>(i)/steps;box({x+(xx-x)*f-weight/2,y+(yy-y)*f-weight/2,weight,weight},color,weight/2);}
+        scene.paint.push_back({{x,y,weight,weight},color,{},1,false,0,-1,true,xx,yy});
     }
     void circle(float x,float y,float r,std::uint32_t color){box({x-r,y-r,r*2,r*2},color,r);}
     void icon(std::string const& id,float x,float y,float size,std::uint32_t color){
@@ -78,18 +82,27 @@ struct Painter {
 };
 }
 
-UiScene YsmUi::draw(float width,float height, float hotbarTop) {
+UiScene const& YsmUi::draw(float width,float height,float hotbarTop) {
+    if (sceneDirty || width != cachedWidth || height != cachedHeight || hotbarTop != cachedHotbar) {
+        cachedScene = buildScene(width, height, hotbarTop);
+        cachedWidth = width; cachedHeight = height; cachedHotbar = hotbarTop;
+        sceneDirty = false;
+    }
+    return cachedScene;
+}
+UiScene YsmUi::buildScene(float width,float height, float hotbarTop) {
     previewArea.reset();
     UiScene scene;hits.clear();ranges.clear();if(!isOpen()||width<=0||height<=0)return scene;
     constexpr float W=920,H=540;
-    // HUD and menu use logical GUI pixels. Account for the highlighted slot before
-    // computing the shared transform for drawing, hover, dragging and button hits.
+     
+     
     bool validBar = std::isfinite(hotbarTop) && hotbarTop >= height*.5f && hotbarTop < height;
     float contentHeight = std::max(1.f, std::min(validBar ? hotbarTop : height, height - 24.f));
     auto scale=std::min(width/(W+32),contentHeight/(H+28));if(!std::isfinite(scale)||scale<=0)return scene;
     auto ox=(width-W*scale)/2,oy=(contentHeight-H*scale)/2;
     auto mx=(mouseX-ox)/scale,my=(mouseY-oy)/scale;
     Painter p{scene};
+    auto tr = [&](char const* zh, char const* en) { return uiText(data.locale, zh, en); };
     auto hit=[&](UiRect r,std::string id){hits.push_back({r,std::move(id)});};
     auto focus=[&](UiRect r,std::string const& id,float radius=6){if(focusId==id)p.border({r.x-2,r.y-2,r.w+4,r.h+4},teal,0x00247968,radius+2,1);};
     auto button=[&](UiRect r,std::string label,std::string id,bool active=false,bool primary=false,std::string icon={}) {
@@ -97,7 +110,7 @@ UiScene YsmUi::draw(float width,float height, float hotbarTop) {
         focus(r,id);p.border(r,active?0xffa9cdbc:edge,fill,6,primary?0.f:1.f);
         auto color=primary?white:active?teal:ink;
         if(!icon.empty())p.icon(icon,r.x+10,r.y+(r.h-14)/2,14,color);
-        p.text(r.x+(icon.empty()?10:32),r.y+(r.h-9)/2,r.w-(icon.empty()?20:42),fit(label,r.w-(icon.empty()?20:42),.95f),color,.95f);
+        p.text(r.x+(icon.empty()?10:32),r.y+(r.h-9)/2,r.w-(icon.empty()?20:42),label,color,.95f);
         hit(r,std::move(id));
     };
     auto iconButton=[&](UiRect r,std::string icon,std::string id,bool active=false) {
@@ -136,20 +149,20 @@ UiScene YsmUi::draw(float width,float height, float hotbarTop) {
     };
     p.box({-ox/scale,-oy/scale,width/scale,height/scale},0x850d241c);
     auto metadata=data.descriptor.value("metadata",Json::object());
-    auto modelName=candidate ? str(language,"metadata.name",candidate->name) : local("metadata.name",str(metadata,"name",data.source.empty()?"尚未选择模型":data.source));
-    std::string title=page==Page::Models?"模型库":page==Page::Textures?"模型贴图":page==Page::Preview?"动作预览":page==Page::Info?"模型信息":page==Page::Settings?"本地设置":page==Page::Forms?"模型设置":page==Page::Players?"联机玩家":page==Page::Import?"导入模型":"动作转盘";
+    auto modelName=candidate ? localizedModelText(language,data.locale,"metadata.name",candidate->name) : local("metadata.name",str(metadata,"name",data.source.empty()?tr("尚未选择模型", "No model selected"):data.source));
+    std::string title=page==Page::Models?tr("模型库", "Model Library"):page==Page::Textures?tr("模型贴图", "Model Textures"):page==Page::Preview?tr("动作预览", "Emote Preview"):page==Page::Info?tr("模型信息", "Model Info"):page==Page::Settings?tr("本地设置", "Local Settings"):page==Page::Forms?tr("模型设置", "Model Settings"):page==Page::Players?tr("联机玩家", "Players"):page==Page::Import?tr("导入模型", "Import Model"):tr("动作转盘", "Emote Wheel");
     if (isWheel()) {
-        p.text(210,11,500,"动作转盘",white,1.9f,true);
+        p.text(210,11,500,tr("动作转盘", "Emote Wheel"),white,1.9f,true);
         auto control=[&](UiRect r,std::string label,std::string id,bool active=false) {
             auto hovered=r.contains(mx,my);
             focus(r,id);
             p.border(r,active ? 0xff90cbb8 : edge,active ? wash : hovered ? soft : white,7);
-            p.text(r.x+3,r.y+(r.h-10)/2,r.w-6,fit(label,r.w-6),active ? teal : ink,1,true);
+            p.text(r.x+3,r.y+(r.h-10)/2,r.w-6,label,active ? teal : ink,1,true);
             hit(r,std::move(id));
         };
-        // All preview and control rectangles are disjoint, even at narrow aspect ratios.
+         
         if (data.enabled) {
-            // Give the portrait a full-height stage and use spare left margin on wide screens.
+             
             float left=std::max(-48.f,8.f-ox/scale);
             scene.preview=UiRect{left,66,258.f-left,400};
             scene.previewCamera=previewCamera;
@@ -182,19 +195,19 @@ UiScene YsmUi::draw(float width,float height, float hotbarTop) {
                 p.text(x-46,top+n*13,92,n==1&&lines.size()>2?fit(lines[n]+"…",91,1.03f):lines[n],highlighted ? teal : ink,1.03f,true);
             p.text(cx+dx*(radius*.86f)-16,cy+dy*(radius*.86f)-4,32,std::to_string(i+1),highlighted ? teal : muted,.78f,true);
             if (!e->form.empty() && (e->key.starts_with('#') || std::find(data.clips.begin(),data.clips.end(),e->key)!=data.clips.end()))
-                control({cx+dx*(radius*.42f)-17,cy+dy*(radius*.42f)-9,34,18},"设置","form:"+e->form,editing);
+                control({cx+dx*(radius*.42f)-17,cy+dy*(radius*.42f)-9,34,18},tr("设置", "Edit"),"form:"+e->form,editing);
         }
         p.circle(cx,cy,42,paper);
         p.icon("wheel",cx-12,cy-27,24,teal);
-        control({cx-37,cy+3,74,22},data.settings.value("movement_lock",false)?"动作锁：开":"动作锁：关","setting:movement_lock");
+        control({cx-37,cy+3,74,22},data.settings.value("movement_lock",false)?tr("动作锁：开", "Lock: On"):tr("动作锁：关", "Lock: Off"),"setting:movement_lock");
         constexpr float sx=602, sw=313;
-        std::string path="根目录";
+        std::string path=tr("根目录", "Root");
         for (std::size_t n=1;n<categories.size();++n) {
             auto const& id=categories[n].first;
             auto parent=props(data.descriptor).value("extra_animation",Json::object());
             if(n>1) for(auto const& c:props(data.descriptor).value("extra_animation_classify",Json::array()))
                 if(str(c,"id")==categories[n-1].first){parent=c.value("extra_animation",Json::object());break;}
-            path+=" / "+local("properties.extra_animation.#"+id,str(parent,("#"+id).c_str(),id));
+            path+=" / "+localizedEmote(data.descriptor,data.language,data.locale,"#"+id,str(parent,("#"+id).c_str(),id));
         }
         float cardBottom=page==Page::Forms ? 478.f : 280.f;
         p.box({sx-5,46,sw+14,cardBottom-38},0x2808140c,12);
@@ -204,7 +217,7 @@ UiScene YsmUi::draw(float width,float height, float hotbarTop) {
         p.text(sx+45,79,sw-90,std::to_string(wheelPage+1)+" / "+std::to_string(pages),teal,1.15f,true);
         iconButton({sx+9,57,32,32},"prev","wheel_prev");
         iconButton({sx+sw-41,57,32,32},"next","wheel_next");
-        control({sx,108,sw,31},"返回","back");
+        control({sx,108,sw,31},tr("返回", "Back"),"back");
         if (page==Page::Forms) {
             Json forms=Json::array();
             for (auto const& b:buttons(data.descriptor)) if (str(b,"id")==formButton) {
@@ -220,7 +233,7 @@ UiScene YsmUi::draw(float width,float height, float hotbarTop) {
                 auto value=data.values.value(route,0.);
                 p.text(sx+10,157,sw-20,fit(local(base+".title",str(form,"title")),sw-20,1.18f),ink,1.18f);
                 auto desc=wrap(local(base+".description",str(form,"description")),sw-20,.88f);
-                // The range control has room below it for the author's option legend.
+                 
                 auto descTop=type=="range" ? 310.f : 179.f;
                 auto maxLines=type=="range" ? 5u : 2u;
                 for(std::size_t n=0;n<std::min<std::size_t>(maxLines,desc.size());++n)
@@ -234,7 +247,7 @@ UiScene YsmUi::draw(float width,float height, float hotbarTop) {
                         auto label=local("properties.extra_animation_buttons."+formButton+".config_forms."+std::to_string(i)+".title",str(forms[i],"title"));
                         p.box({sx+7,y,sw-14,29},soft,6);
                         p.text(sx+15,y+9,sw-92,fit(label,sw-92),ink,1);
-                        control({sx+sw-71,y,64,29},on?"已开启":"已关闭","value:"+key+":toggle",on);
+                        control({sx+sw-71,y,64,29},on?tr("已开启", "On"):tr("已关闭", "Off"),"value:"+key+":toggle",on);
                         hits.back().rect={sx+7,y,sw-14,29};
                     }
                 } else if (type=="range") {
@@ -264,57 +277,57 @@ UiScene YsmUi::draw(float width,float height, float hotbarTop) {
                     }
                 }
                 if(forms.size()>1){
-                    control({sx,390,90,30},"上一项","prev");
+                    control({sx,390,90,30},tr("上一项", "Previous"),"prev");
                     p.text(sx+96,400,sw-192,std::to_string(formPage+1)+" / "+std::to_string(forms.size()),muted,.95f,true);
-                    control({sx+sw-90,390,90,30},"下一项","next");
+                    control({sx+sw-90,390,90,30},tr("下一项", "Next"),"next");
                 }
-            } else p.text(sx+12,163,sw-24,"作者未提供设置项",muted,1);
+            } else p.text(sx+12,163,sw-24,tr("作者未提供设置项", "No settings provided by the author"),muted,1);
         } else {
-            std::string heading="选择装饰或动作", detail="点击扇区，或按对应数字键 1–8。";
+            std::string heading=tr("选择装饰或动作", "Choose an emote or accessory"), detail=tr("点击扇区，或按对应数字键 1–8。", "Click a sector or press 1–8.");
             if(wheelHovered>=0 && wheelPage*8+wheelHovered<entries.size()) {
                 auto const& e=entries[wheelPage*8+wheelHovered];
                 heading=e.label;detail=e.description;
-                if(detail.empty()) detail=e.key=="#return" ? "返回上一级" : e.key.starts_with('#') ? "打开分组"
-                    : !e.form.empty() ? "在右侧调整装饰" : "播放动作并关闭转盘";
+                if(detail.empty()) detail=e.key=="#return" ? tr("返回上一级", "Return to parent group") : e.key.starts_with('#') ? tr("打开分组", "Open group")
+                    : !e.form.empty() ? tr("在右侧调整装饰", "Adjust accessories on the right") : tr("播放动作并关闭转盘", "Play emote and close wheel");
             }
             p.text(sx+12,160,sw-24,fit(heading,sw-24,1.15f),teal,1.15f);
             auto lines=wrap(detail,sw-24,.9f);
             for(std::size_t i=0;i<std::min<std::size_t>(3,lines.size());++i)p.text(sx+12,186+i*14,sw-24,lines[i],muted,.9f);
         }
         float actionY=cardBottom-38;
-        button({sx,actionY,151,32},"停止当前动作","stop",false,false,"stop");
-        button({sx+157,actionY,156,32},"动作预览","preview",false,true,"play");
+        button({sx,actionY,151,32},tr("停止当前动作", "Stop Emote"),"stop",false,false,"stop");
+        button({sx+157,actionY,156,32},tr("动作预览", "Emote Preview"),"preview",false,true,"play");
         iconButton({W-28,3,28,28},"close","close");
     } else {
         p.box({2,7,W,H},0x3008140c,16);p.box({0,0,W,H},paper,14);
         p.box({0,0,143,H},0xfff0f3eb,14);p.box({132,0,11,H},0xfff0f3eb);p.box({143,0,1,H},edge);
-        p.box({20,25,29,29},teal,8);p.icon("model",26,31,17,white);p.text(59,29,70,"YSM",ink,1.75f);p.text(22,67,100,"模型工坊",muted,.9f);
+        p.box({20,25,29,29},teal,8);p.icon("model",26,31,17,white);p.text(59,29,70,"YSM",ink,1.75f);p.text(22,67,100,tr("模型工坊", "Model Workshop"),muted,.9f);
         float navY=112;
         auto nav=[&](std::string label,std::string id,std::string icon,Page target) {
             UiRect r{12,navY,119,37};bool active=page==target,hover=r.contains(mx,my);focus(r,id);if(active||hover)p.box(r,active?wash:0xffe7eddf,7);
             if(active)p.box({12,navY+10,3,17},teal,1.5f);p.icon(icon,25,navY+10,17,active?teal:muted);p.text(52,navY+14,70,label,active?teal:ink,1);
             hit(r,std::move(id));navY+=45;
         };
-        nav("模型库","models","model",Page::Models);nav("贴图","textures","texture",Page::Textures);nav("动作预览","preview","play",Page::Preview);nav("动作转盘","roulette","wheel",Page::Roulette);nav("模型信息","info","info",Page::Info);nav("本地设置","settings","settings",Page::Settings);
-        nav("联机玩家","players","model",Page::Players);
-        p.box({20,424,103,1},edge);p.circle(27,447,3,data.enabled?teal:muted);p.text(38,443,85,data.enabled?"模型已启用":"原版外观",muted,.8f);
-        button({19,474,105,30},data.enabled?"恢复原版":"启用模型","toggle",false,false);
-        p.text(169,29,610,title,ink,1.85f);p.text(170,60,600,page==Page::Import?"选择本机的模型包或源文件夹。":page==Page::Models?"点选模型即可预览。":page==Page::Textures?"换一张贴图，换一种心情。":page==Page::Preview?"查看模型自带的动作与外观设置。":page==Page::Info?"每一个模型，都有创作者的故事。":page==Page::Settings?"调整自己的观看与操作体验。":"由模型作者提供的外观与动作选项。",muted,.9f);
+        nav(tr("模型库", "Models"),"models","model",Page::Models);nav(tr("贴图", "Textures"),"textures","texture",Page::Textures);nav(tr("动作预览", "Preview"),"preview","play",Page::Preview);nav(tr("动作转盘", "Emotes"),"roulette","wheel",Page::Roulette);nav(tr("模型信息", "Model Info"),"info","info",Page::Info);nav(tr("本地设置", "Settings"),"settings","settings",Page::Settings);
+        nav(tr("联机玩家", "Players"),"players","model",Page::Players);
+        p.box({20,424,103,1},edge);p.circle(27,447,3,data.enabled?teal:muted);p.text(38,443,85,data.enabled?tr("模型已启用", "Model enabled"):tr("原版外观", "Vanilla appearance"),muted,.8f);
+        button({19,474,105,30},data.enabled?tr("恢复原版", "Use Vanilla"):tr("启用模型", "Enable Model"),"toggle",false,false);
+        p.text(169,29,610,title,ink,1.85f);p.text(170,60,600,page==Page::Import?tr("选择本机的模型包或源文件夹。", "Choose a local model pack or source folder."):page==Page::Models?tr("点选模型即可预览。", "Select a model to preview it."):page==Page::Textures?tr("换一张贴图，换一种心情。", "Choose a new texture for your model."):page==Page::Preview?tr("查看模型自带的动作与外观设置。", "Preview the model's animations and appearance settings."):page==Page::Info?tr("每一个模型，都有创作者的故事。", "Learn about the model and its creators."):page==Page::Settings?tr("调整自己的观看与操作体验。", "Customize your controls and visuals."):tr("由模型作者提供的外观与动作选项。", "Appearance and animation options provided by the author."),muted,.9f);
         iconButton({866,24,30,30},"close","close");
-        p.box({169,490,727,1},edge);hint(171,507,"Tab","切换焦点",29);hint(320,507,"Enter","选择",39);hint(451,507,"Esc","返回",28);
-        if(data.loading || !data.browseLoading.empty())chip(726,507,"正在加载…",wash,teal,167);
+        p.box({169,490,727,1},edge);hint(171,507,"Tab",tr("切换焦点", "Change focus"),29);hint(320,507,"Enter",tr("选择", "Select"),39);hint(451,507,"Esc",tr("返回", "Back"),28);
+        if(data.loading || !data.browseLoading.empty())chip(726,507,tr("正在加载…", "Loading…"),wash,teal,167);
         else if(!data.message.empty())p.text(618,513,270,fit(data.message,270,.8f),muted,.8f);
-        else p.text(698,513,190,"本地模型 · 随时切换",muted,.8f);
+        else p.text(698,513,190,tr("本地模型 · 随时切换", "Local models · switch anytime"),muted,.8f);
         constexpr float top=96,cx=171,cw=725;
         auto pager=[&](std::size_t& current,std::size_t total,float px,float yy,float ww) {
             total=std::max<std::size_t>(1,total);current%=total;
             iconButton({px,yy,29,27},"prev","prev");iconButton({px+ww-29,yy,29,27},"next","next");p.text(px+38,yy+9,ww-76,std::to_string(current+1)+" / "+std::to_string(total),muted,.82f,true);
         };
         auto modelStage=[&](UiRect r) {
-            p.box(r,0xffeaf1e5,10);p.box({r.x+14,r.y+14,75,20},0xcfffffff,10);p.text(r.x+14,r.y+20,75,page==Page::Models?"模型预览":"当前模型",teal,.75f,true);
+            p.box(r,0xffeaf1e5,10);p.box({r.x+14,r.y+14,75,20},0xcfffffff,10);p.text(r.x+14,r.y+20,75,page==Page::Models?tr("模型预览", "Preview"):tr("当前模型", "Current model"),teal,.75f,true);
             preview({r.x+12,r.y+47,r.w-24,r.h-126});
             if (libraryPage && !data.browseLoading.empty()) {
-                p.text(r.x+18,r.y+r.h/2,r.w-36,"正在读取模型…",muted,.9f,true);
+                p.text(r.x+18,r.y+r.h/2,r.w-36,tr("正在读取模型…", "Loading model…"),muted,.9f,true);
                 return;
             }
             p.text(r.x+18,r.y+r.h-66,r.w-36,fit(modelName,r.w-36,1.12f),ink,1.12f);
@@ -322,17 +335,17 @@ UiScene YsmUi::draw(float width,float height, float hotbarTop) {
                 auto src=data.browsing->source;
                 if(src.starts_with("server:")){
                     auto width=(r.w-40)*.5f;
-                    button({r.x+16,r.y+r.h-43,width,31},"穿戴","wear",false,true);
-                    button({r.x+24+width,r.y+r.h-43,width,31},"收藏到本地","room:collect:"+src.substr(7));
-                }else button({r.x+16,r.y+r.h-43,r.w-32,31},"穿戴此模型","wear",false,true);
+                    button({r.x+16,r.y+r.h-43,width,31},tr("穿戴", "Equip"),"wear",false,true);
+                    button({r.x+24+width,r.y+r.h-43,width,31},tr("收藏到本地", "Save Locally"),"room:collect:"+src.substr(7));
+                }else button({r.x+16,r.y+r.h-43,r.w-32,31},tr("穿戴此模型", "Equip Model"),"wear",false,true);
             }
-            else p.text(r.x+18,r.y+r.h-40,r.w-36,fit(local("metadata.tips",str(metadata,"tips","陪你开始一段新的冒险")),r.w-36,.8f),muted,.8f);
+            else p.text(r.x+18,r.y+r.h-40,r.w-36,fit(local("metadata.tips",str(metadata,"tips",tr("陪你开始一段新的冒险", "Start a new adventure together"))),r.w-36,.8f),muted,.8f);
         };
         if(page==Page::Models) {
             constexpr float listW=453;
             UiRect searchRect{cx,top,277,32};focus(searchRect,"search");p.border(searchRect,searchFocused?0xff93bfaa:edge,white,7);p.icon("search",cx+11,top+9,14,muted);
-            p.text(cx+33,top+12,232,fit(search.empty()?"搜索名称（可粘贴中文）":search,232,.9f),search.empty()?muted:ink,.9f);hit(searchRect,"search");
-            button({cx+288,top,105,32},favoritesOnly?"已收藏":"全部模型","favorite_filter",favoritesOnly,false,"star");iconButton({cx+409,top,34,32},"reload","reload");
+            p.text(cx+33,top+12,232,fit(search.empty()?tr("搜索名称（可粘贴中文）", "Search models"):search,232,.9f),search.empty()?muted:ink,.9f);hit(searchRect,"search");
+            button({cx+288,top,105,32},favoritesOnly?tr("已收藏", "Favorites"):tr("全部模型", "All Models"),"favorite_filter",favoritesOnly,false,"star");iconButton({cx+409,top,34,32},"reload","reload");
             struct Card { Json const* row; std::string name, author; };
             auto favorites=data.settings.value("favorites",Json::array());std::vector<Card> entries;
             auto query=lower(search);
@@ -343,12 +356,12 @@ UiScene YsmUi::draw(float width,float height, float hotbarTop) {
                 static Json const empty=Json::object();
                 auto languages=e.find("languages");
                 auto const& strings=languages!=e.end()?modelLanguage(*languages,data.locale):source==data.source?data.language:empty;
-                auto name=str(strings,"metadata.name",str(e,"name",source));
-                auto author=str(strings,"metadata.authors.0.name",str(e,"author",str(e,"kind")=="folder"?"源模型文件夹":"YSM 模型包"));
-                if(!query.empty()&&lower(source+"\n"+name+"\n"+author+"\n"+str(strings,"metadata.tips")).find(query)==std::string::npos)continue;
+                auto name=localizedModelText(strings,data.locale,"metadata.name",str(e,"name",source));
+                auto author=str(e,"kind")=="server" ? std::string(tr("服务器", "Server")) : localizedModelText(strings,data.locale,"metadata.authors.0.name",str(e,"author",str(e,"kind")=="folder"?tr("源模型文件夹", "Source folder"):tr("YSM 模型包", "YSM model pack")));
+                if(!query.empty()&&lower(source+"\n"+name+"\n"+str(e,"name")+"\n"+author+"\n"+str(strings,"metadata.tips")).find(query)==std::string::npos)continue;
                 entries.push_back({&e,std::move(name),std::move(author)});
             }
-            p.text(cx,top+49,300,"本地模型",ink,.9f);p.text(cx+360,top+49,83,std::to_string(entries.size())+" 个模型",muted,.8f);
+            p.text(cx,top+49,300,tr("本地模型", "Local Models"),ink,.9f);p.text(cx+360,top+49,83,std::to_string(entries.size())+tr(" 个模型", " models"),muted,.8f);
             constexpr std::size_t perPage=4;auto pages=std::max<std::size_t>(1,(entries.size()+perPage-1)/perPage);listPage%=pages;
             for(std::size_t n=0;n<perPage&&listPage*perPage+n<entries.size();++n) {
                 auto const& card=entries[listPage*perPage+n];auto const& e=*card.row;
@@ -357,51 +370,60 @@ UiScene YsmUi::draw(float width,float height, float hotbarTop) {
                 UiRect r{cx+static_cast<float>(n%2)*232,top+72+static_cast<float>(n/2)*131,221,119};auto id="select:"+source;
                 bool hover=r.contains(mx,my);focus(r,id,9);p.border(r,selected?0xff8fbea6:hover?0xffb9cdb7:edge,selected?0xffedf6ee:white,9,selected?1.5f:1.f);hit(r,id);
                 p.box({r.x+13,r.y+13,38,38},selected?0xffd7eadb:soft,9);p.icon("model",r.x+23,r.y+23,18,selected?teal:0xff93aa98);
-                if(source==data.source && data.enabled)chip(r.x+60,r.y+21,"已穿戴",wash,teal,58);
-                else if(selected)chip(r.x+60,r.y+21,"预览中",wash,teal,58);
+                if(source==data.source && data.enabled)chip(r.x+60,r.y+21,tr("已穿戴", "Equipped"),wash,teal,58);
+                else if(selected)chip(r.x+60,r.y+21,tr("预览中", "Preview"),wash,teal,58);
                 iconButton({r.x+r.w-38,r.y+15,25,25},"star","favorite:"+source,starred);
                 p.text(r.x+14,r.y+66,r.w-28,fit(display,r.w-28,1.05f),ink,1.05f);
-                p.text(r.x+14,r.y+92,r.w-28,fit(str(e,"status")=="invalid"?"读取失败 · 可重新选择":card.author,r.w-28,.76f),str(e,"status")=="invalid"?0xffa27a49:muted,.76f);
+                p.text(r.x+14,r.y+92,r.w-28,fit(str(e,"status")=="invalid"?tr("读取失败 · 可重新选择", "Load failed · select again"):card.author,r.w-28,.76f),str(e,"status")=="invalid"?0xffa27a49:muted,.76f);
             }
-            if(entries.empty()){p.icon("model",cx+195,top+157,38,0xffbecbbb);p.text(cx,top+211,listW,"没有匹配的本地模型",muted,1,true);}
-            button({cx,439,104,28},"导入模型","import");
+            if(entries.empty()){p.icon("model",cx+195,top+157,38,0xffbecbbb);p.text(cx,top+211,listW,tr("没有匹配的本地模型", "No matching local models"),muted,1,true);}
+            button({cx,439,104,28},tr("导入模型", "Import Model"),"import");
             pager(listPage,pages,cx+128,439,197);
             modelStage({650,top,246,378});
         } else if(page==Page::Import) {
-            button({cx,top+20,221,40},"选择模型包","import_file",false,true);
-            p.text(cx,top+73,cw,"支持 .zip 和 .ysm",muted,.9f);
-            button({cx,top+124,221,40},"选择源文件夹","import_folder");
-            p.text(cx,top+177,cw,"选择包含完整模型资源的文件夹",muted,.9f);
-            button({cx,top+220,221,40},"打开模型文件夹","open_models_folder");
-            button({cx,top+306,90,31},"返回","back");
+            button({cx,top+20,221,40},tr("选择模型包", "Choose Model Pack"),"import_file",false,true);
+            p.text(cx,top+73,cw,tr("支持 .zip 和 .ysm", "Supports .zip and .ysm"),muted,.9f);
+            button({cx,top+124,221,40},tr("选择源文件夹", "Choose Source Folder"),"import_folder");
+            p.text(cx,top+177,cw,tr("选择包含完整模型资源的文件夹", "Choose a folder containing all model resources"),muted,.9f);
+            button({cx,top+220,221,40},tr("打开模型文件夹", "Open Models Folder"),"open_models_folder");
+            button({cx,top+306,90,31},tr("返回", "Back"),"back");
         } else if(page==Page::Textures) {
             modelStage({cx,top,292,378});float lx=485,lw=411;
-            p.text(lx,top+4,lw,"可用贴图",ink,1.1f);p.text(lx,top+27,lw,"选择后应用到当前模型",muted,.85f);
+            p.text(lx,top+4,lw,tr("可用贴图", "Available Textures"),ink,1.1f);p.text(lx,top+27,lw,tr("选择后应用到当前模型", "Select to apply to the current model"),muted,.85f);
             constexpr std::size_t rows=5;auto pages=std::max<std::size_t>(1,(data.textures.size()+rows-1)/rows);texturePage%=pages;
             for(std::size_t n=0;n<rows&&texturePage*rows+n<data.textures.size();++n){auto const& t=data.textures[texturePage*rows+n];UiRect r{lx,top+57+n*51,lw,43};button(r,local("files.player.texture."+t,t),"texture:"+t,t==data.texture,false,"texture");if(t==data.texture)p.icon("check",r.x+r.w-30,r.y+14,14,teal);}
             pager(texturePage,pages,lx+102,439,207);
         } else if(page==Page::Preview) {
             scene.animatePreview=true;
-            p.box({cx,top,328,378},0xffeaf1e5,10);chip(cx+15,top+15,"动作展示",white,teal,72);preview({cx+15,top+46,298,264});
-            iconButton({cx+16,top+329,33,31},"prev","rotate_left");iconButton({cx+58,top+329,33,31},"next","rotate_right");button({cx+121,top+329,86,31},"复位预览","reset_preview");iconButton({cx+226,top+329,33,31},"minus","zoom_out");iconButton({cx+268,top+329,33,31},"plus","zoom_in");
-            float lx=521,lw=375;std::vector<std::pair<std::string,std::string>> choices{{"自动动作","automatic"}};
-            if (!candidate && data.browseLoading.empty()) for(auto const& b:buttons(data.descriptor))choices.emplace_back(str(b,"name",str(b,"id")),"form:"+str(b,"id"));
-            if (data.browseLoading.empty()) for(auto const& c:clips)choices.emplace_back(str(language,("properties.extra_animation."+c).c_str(),c),"clip:"+c);
-            p.text(lx,top+5,lw,candidate ? modelName : "模型设置与动作",ink,1.1f);p.text(lx,top+30,lw,"保留模型作者的原始动作",muted,.85f);
-            constexpr std::size_t rows=7;auto pages=std::max<std::size_t>(1,(choices.size()+rows-1)/rows);previewPage%=pages;
-            for(std::size_t n=0;n<rows&&previewPage*rows+n<choices.size();++n){auto const& [label,id]=choices[previewPage*rows+n];button({lx,top+61+n*38,lw,31},label,id,id=="clip:"+previewClip,false,id.starts_with("form:")?"settings":"play");}
+            p.box({cx,top,328,378},0xffeaf1e5,10);chip(cx+15,top+15,tr("动作展示", "Emotes"),white,teal,72);preview({cx+15,top+46,298,264});
+            iconButton({cx+16,top+329,33,31},"prev","rotate_left");iconButton({cx+58,top+329,33,31},"next","rotate_right");button({cx+121,top+329,86,31},tr("复位预览", "Reset View"),"reset_preview");iconButton({cx+226,top+329,33,31},"minus","zoom_out");iconButton({cx+268,top+329,33,31},"plus","zoom_in");
+            float lx=521,lw=375;
+            auto const& forms=buttons(data.descriptor);
+            auto formCount=(!candidate && data.browseLoading.empty())?forms.size():0;
+            auto clipCount=data.browseLoading.empty()?clips.size():0;
+            auto count=1+formCount+clipCount;
+            p.text(lx,top+5,lw,candidate ? modelName : tr("模型设置与动作", "Model Settings and Emotes"),ink,1.1f);p.text(lx,top+30,lw,tr("保留模型作者的原始动作", "Preview the author's original animations"),muted,.85f);
+            constexpr std::size_t rows=7;auto pages=std::max<std::size_t>(1,(count+rows-1)/rows);previewPage%=pages;
+            for(std::size_t n=0;n<rows&&previewPage*rows+n<count;++n){
+                auto index=previewPage*rows+n;
+                std::string label,id;
+                if(index==0){label=tr("自动动作", "Automatic");id="automatic";}
+                else if(index<=formCount){auto const& b=forms.at(index-1);auto name=str(b,"id");label=local("properties.extra_animation_buttons."+name+".name",str(b,"name",name));id="form:"+name;}
+                else {auto const& c=clips[index-1-formCount];label=localizedEmote(candidate ? candidate->descriptor : data.descriptor,language,data.locale,c);id="clip:"+c;}
+                button({lx,top+61+n*38,lw,31},label,id,id=="clip:"+previewClip,false,id.starts_with("form:")?"settings":"play");
+            }
             pager(previewPage,pages,lx+89,439,197);
         } else if(page==Page::Players) {
-            button({cx,top,135,30},"共享文件夹","room:folder");
-            button({cx+145,top,130,30},"房间规则","room:settings");
-            button({cx+285,top,130,30},"重读共享设置","room:reload");
+            button({cx,top,135,30},tr("共享文件夹", "Shared Folder"),"room:folder");
+            button({cx+145,top,130,30},tr("房间规则", "Room Rules"),"room:settings");
+            button({cx+285,top,130,30},tr("重读共享设置", "Reload Sharing"),"room:reload");
             auto active=data.room.value("active",false);
             auto host=data.room.value("host",false);
             if(host){
-                button({cx+424,top,167,30},data.room.value("auto_receive",true)?"自动接收 · 开":"自动接收 · 关","room:toggle-auto");
-                button({cx+600,top,125,30},observersOpen?"返回玩家":"客端显示回报","room_observers",observersOpen);
+                button({cx+424,top,167,30},data.room.value("auto_receive",true)?tr("自动接收 · 开", "Auto Receive: On"):tr("自动接收 · 关", "Auto Receive: Off"),"room:toggle-auto");
+                button({cx+600,top,125,30},observersOpen?tr("返回玩家", "Back to Players"):tr("客端显示回报", "Client Reports"),"room_observers",observersOpen);
             }
-            else p.text(cx+430,top+9,287,active?"已连接房主":"等待兼容的房间连接",muted,.85f);
+            else p.text(cx+430,top+9,287,active?tr("已连接房主", "Connected to host"):tr("等待兼容的房间连接", "Waiting for a compatible room"),muted,.85f);
             auto offers=data.room.value("offers",Json::array());
             auto denied=host?data.room.value("denied",Json::array()):Json::array();
             auto reports=data.room.value("observations",Json::array());
@@ -411,17 +433,17 @@ UiScene YsmUi::draw(float width,float height, float hotbarTop) {
             auto pages=std::max<std::size_t>(1,(count+rows-1)/rows);
             playerPage%=pages;
             std::string notice=str(data.room,"message");
-            if(showReports)notice=count?"由各客端回报该玩家的模型显示状态。":"等待客端加入并接收玩家模型。";
-            if(notice.empty() && !count)notice="房主开放的模型会自动下载。";
+            if(showReports)notice=count?tr("由各客端回报该玩家的模型显示状态。", "Each client reports how this player's model is displayed."):tr("等待客端加入并接收玩家模型。", "Waiting for clients to join and receive models.");
+            if(notice.empty() && !count)notice=tr("房主开放的模型会自动下载。", "Models shared by the host download automatically.");
             auto noticeWidth=active?cw-275:cw;
             p.text(cx,top+45,noticeWidth,fit(notice,noticeWidth,.85f),muted,.85f);
             if(active){
-                auto speed="本机上传 "+std::to_string(data.room.value("upload_bps",0u)/1024)+" KiB/s · 下载 "
+                auto speed=tr("本机上传 ", "Up ")+std::to_string(data.room.value("upload_bps",0u)/1024)+tr(" KiB/s · 下载 ", " KiB/s · Down ")
                     +std::to_string(data.room.value("download_bps",0u)/1024)+" KiB/s";
                 p.text(cx+cw-268,top+45,268,speed,ink,.85f);
                 auto uploadTarget=str(data.room,"upload_retry");
-                if(!uploadTarget.empty())button({cx,437,145,29},"重新上传我的模型","room:retry-upload:"+uploadTarget);
-                auto limit="本机限速 "+std::to_string(data.room.value("rate_limit",0u)/1024)+" KiB/s";
+                if(!uploadTarget.empty())button({cx,437,145,29},tr("重新上传我的模型", "Retry My Upload"),"room:retry-upload:"+uploadTarget);
+                auto limit=tr("本机限速 ", "Rate limit: ")+std::to_string(data.room.value("rate_limit",0u)/1024)+" KiB/s";
                 button({cx+cw-160,437,160,29},limit,"room:cycle-rate");
             }
             for(std::size_t i=0;i<rows && playerPage*rows+i<count;++i){
@@ -439,70 +461,71 @@ UiScene YsmUi::draw(float width,float height, float hotbarTop) {
                     p.text(cx+16,y+23,width,fit(str(peer,"state"),width,.87f),muted,.87f);
                     auto key=str(peer,"key");
                     if(host && !key.empty()){
-                        button({cx+cw-274,y+6,80,30},"本场拒绝","room:deny-once:"+key);
-                        button({cx+cw-190,y+6,88,30},"长期拒绝","room:deny:"+key);
+                        button({cx+cw-274,y+6,80,30},tr("本场拒绝", "Deny Once"),"room:deny-once:"+key);
+                        button({cx+cw-190,y+6,88,30},tr("长期拒绝", "Deny Always"),"room:deny:"+key);
                     }
-                    if(peer.value("retry",false))button({cx+cw-(host?369:187),y+6,87,30},"重新下载","room:retry:"+str(peer,"stream")+"|"+str(peer,"id"));
-                    button({cx+cw-96,y+6,84,30},hidden?"本机显示":"本机屏蔽","peer:"+str(peer,"id"),hidden);
+                    if(peer.value("retry",false))button({cx+cw-(host?369:187),y+6,87,30},tr("重新下载", "Retry"),"room:retry:"+str(peer,"stream")+"|"+str(peer,"id"));
+                    button({cx+cw-96,y+6,84,30},hidden?tr("本机显示", "Show"):tr("本机屏蔽", "Hide"),"peer:"+str(peer,"id"),hidden);
                 }else if(index<data.players.size()+denied.size()){
                     auto const& model=denied[index-data.players.size()];
                     auto key=str(model,"key"),title=str(model,"title");
                     bool temporary=model.value("temporary",false);
-                    auto label=std::string(temporary?"本场已拒绝 · ":"长期已拒绝 · ")+(title.empty()?std::string{}:title+" · ")+key.substr(7,12);
+                    auto label=std::string(temporary?tr("本场已拒绝 · ", "Denied this session · "):tr("长期已拒绝 · ", "Always denied · "))+(title.empty()?std::string{}:title+" · ")+key.substr(7,12);
                     p.text(cx+16,y+13,cw-255,fit(label,cw-255,1),ink,1);
-                    if(temporary)button({cx+cw-244,y+6,102,30},"改为长期拒绝","room:deny:"+key);
-                    button({cx+cw-137,y+6,121,30},"重新允许",std::string(temporary?"room:allow-once:":"room:allow:")+key);
+                    if(temporary)button({cx+cw-244,y+6,102,30},tr("改为长期拒绝", "Deny Always"),"room:deny:"+key);
+                    button({cx+cw-137,y+6,121,30},tr("重新允许", "Allow Again"),std::string(temporary?"room:allow-once:":"room:allow:")+key);
                 }else{
                     auto const& offer=offers[index-data.players.size()-denied.size()];
                     p.text(cx+16,y+13,480,fit(str(offer,"title"),480,1),ink,1);
-                    button({cx+cw-137,y+6,121,30},"接收分享","room:offer:"+str(offer,"key"));
+                    button({cx+cw-137,y+6,121,30},tr("接收分享", "Accept Share"),"room:offer:"+str(offer,"key"));
                 }
             }
             if(pages>1)pager(playerPage,pages,cx+260,439,205);
         } else if(page==Page::Settings) {
             struct Setting {char const* label;char const* description;char const* key;};
-            Setting controls[]={{"使用原版外观","关闭自己的 YSM 模型替换","disable_self_model"},{"使用原版手臂","仅恢复第一人称手臂","disable_self_hands"},{"屏蔽投射物模型","恢复箭等投射物的原版外观","disable_projectile_model"},{"屏蔽载具模型","恢复船与矿车的原版外观","disable_vehicle_model"},{"动作提示","显示转盘动作名称","print_animation_roulette_msg"},{"移动时保留动作","关闭后，走动、跳跃或潜行会停止额外动作","movement_lock"},{"屏蔽其他玩家","恢复其他玩家的原版外观","disable_other_models"},{"角色小窗","在游戏画面显示自己的动作","show_hud_avatar"}};
+            Setting controls[]={{tr("使用原版外观", "Vanilla Appearance"),tr("关闭自己的 YSM 模型替换", "Disable your own YSM model"),"disable_self_model"},{tr("使用原版手臂", "Vanilla Hands"),tr("仅恢复第一人称手臂", "Restore first-person arms only"),"disable_self_hands"},{tr("屏蔽投射物模型", "Vanilla Projectiles"),tr("恢复箭等投射物的原版外观", "Restore vanilla arrows and other projectiles"),"disable_projectile_model"},{tr("屏蔽载具模型", "Vanilla Vehicles"),tr("恢复船与矿车的原版外观", "Restore vanilla boats and minecarts"),"disable_vehicle_model"},{tr("动作提示", "Emote Notifications"),tr("显示转盘动作名称", "Show the selected emote name"),"print_animation_roulette_msg"},{tr("移动时保留动作", "Keep Emote While Moving"),tr("关闭后，走动、跳跃或潜行会停止额外动作", "Off: walking, jumping or sneaking stops emotes"),"movement_lock"},{tr("屏蔽其他玩家", "Hide Other Models"),tr("恢复其他玩家的原版外观", "Restore other players' vanilla appearance"),"disable_other_models"},{tr("角色小窗", "HUD Avatar"),tr("在游戏画面显示自己的动作", "Show your model on the game HUD"),"show_hud_avatar"}};
             for(std::size_t i=0;i<std::size(controls);++i){auto const& c=controls[i];UiRect r{cx+static_cast<float>(i%2)*371,top+static_cast<float>(i/2)*55,354,49};auto id="setting:"+std::string(c.key);p.border(r,edge,white,9);p.text(r.x+16,r.y+8,240,c.label,ink,1.02f);p.text(r.x+16,r.y+28,254,c.description,muted,.78f);toggle({r.x+r.w-56,r.y+13,40,21},id,data.settings.value(c.key,false),r);}
             auto option = [&](float x, char const* label, char const* key, bool initial) {
                 p.text(x+12,top+365,165,label,ink,.95f);
                 toggle({x+177,top+357,40,21},"setting:"+std::string(key),data.settings.value(key,initial),UiRect{x,top+355,229,28});
             };
-            option(cx, "原生网格预览", "native_menu_preview", true);
-            option(cx+247, "鼠标兼容模式", "relative_menu_pointer", false);
-            option(cx+494, "Arke 附加发光层", "arke_extra_emissive_layer", false);
+            option(cx, tr("原生网格预览", "Native Mesh Preview"), "native_menu_preview", true);
+            option(cx+247, tr("鼠标兼容模式", "Mouse Compatibility"), "relative_menu_pointer", false);
+            option(cx+494, tr("Arke 附加发光层", "Arke Emissive Layer"), "arke_extra_emissive_layer", false);
             p.box({cx,top+224,cw,130},white,9);
-            p.text(cx+16,top+234,96,"模型音量",ink,1);
-            p.text(cx+367,top+234,168,"纸娃娃帧率  "+std::to_string(data.settings.value("hud_fps",30)),ink,.95f);
-            slider({cx+510,top+226,182,24},"hud_fps",5,30,1,true);
+            p.text(cx+16,top+234,96,tr("模型音量", "Model Volume"),ink,1);
+            p.text(cx+367,top+234,168,tr("纸娃娃帧率  ", "Avatar FPS: ")+std::to_string(data.settings.value("hud_fps",60)),ink,.95f);
+            slider({cx+510,top+226,182,24},"hud_fps",5,60,1,true);
             slider({cx+112,top+226,218,24},"sound_volume",0,100,1,true);
             if (data.settings.value("show_hud_avatar",false)) {
-                p.text(cx+16,top+271,95,"左右位置",ink,.92f);slider({cx+113,top+262,219,26},"hud_x",0,100,1,true);
-                p.text(cx+385,top+271,95,"上下位置",ink,.92f);slider({cx+482,top+262,210,26},"hud_y",0,100,1,true);
-                p.text(cx+16,top+314,95,"小窗大小",ink,.92f);slider({cx+113,top+305,219,26},"hud_size",0,100,1,true);
-                p.text(cx+385,top+314,95,"小窗角度",ink,.92f);slider({cx+482,top+305,210,26},"hud_yaw",0,100,1,true);
+                p.text(cx+16,top+271,95,tr("左右位置", "Horizontal"),ink,.92f);slider({cx+113,top+262,219,26},"hud_x",0,100,1,true);
+                p.text(cx+385,top+271,95,tr("上下位置", "Vertical"),ink,.92f);slider({cx+482,top+262,210,26},"hud_y",0,100,1,true);
+                p.text(cx+16,top+314,95,tr("小窗大小", "Avatar Size"),ink,.92f);slider({cx+113,top+305,219,26},"hud_size",0,100,1,true);
+                p.text(cx+385,top+314,95,tr("小窗角度", "Avatar Angle"),ink,.92f);slider({cx+482,top+305,210,26},"hud_yaw",0,100,1,true);
             }
         } else if(page==Page::Info) {
             std::vector<std::pair<std::string,std::string>> lines;
             auto add=[&](std::string const& text){for(auto const& row:wrap(text,665,.96f))lines.emplace_back(row,"");};
-            add("模型："+modelName);auto tips=local("metadata.tips",str(metadata,"tips"));if(!tips.empty())add(tips);
-            auto license=metadata.value("license",Json::object());add("许可："+(license.is_string()?license.get<std::string>():str(license,"type","未声明")));
+            add(tr("模型：", "Model: ")+modelName);auto tips=local("metadata.tips",str(metadata,"tips"));if(!tips.empty())add(tips);
+            auto license=metadata.value("license",Json::object());add(tr("许可：", "License: ")+(license.is_string()?license.get<std::string>():str(license,"type",tr("未声明", "Unspecified"))));
             std::size_t authorIndex=0;for(auto const& author:metadata.value("authors",Json::array())){
                 auto key="metadata.authors."+std::to_string(authorIndex++);add(local(key+".name",str(author,"name"))+"  ·  "+local(key+".role",str(author,"role")));
                 auto comment=local(key+".comment",str(author,"comment"));if(!comment.empty())add(comment);
-                auto contacts=author.value("contact",Json::object());if(contacts.is_object())for(auto const& [label,link]:contacts.items())if(link.is_string())lines.emplace_back("打开 "+label,link.get<std::string>());
+                auto contacts=author.value("contact",Json::object());if(contacts.is_object())for(auto const& [label,link]:contacts.items())if(link.is_string())lines.emplace_back(tr("打开 ", "Open ")+label,link.get<std::string>());
             }
-            auto links=metadata.value("link",Json::object());if(links.is_object())for(auto const& [label,link]:links.items())if(link.is_string())lines.emplace_back("打开 "+label,link.get<std::string>());
+            auto links=metadata.value("link",Json::object());if(links.is_object())for(auto const& [label,link]:links.items())if(link.is_string())lines.emplace_back(tr("打开 ", "Open ")+label,link.get<std::string>());
             p.border({cx,top,cw,378},edge,white,10);constexpr std::size_t rows=9;auto pages=std::max<std::size_t>(1,(lines.size()+rows-1)/rows);infoPage%=pages;
             for(std::size_t n=0;n<rows&&infoPage*rows+n<lines.size();++n){auto const& [label,link]=lines[infoPage*rows+n];if(link.empty())p.text(cx+22,top+24+n*33,cw-44,label,n==0?ink:muted,.96f);else button({cx+22,top+15+n*33,cw-44,28},label,"link:"+link,false,false,"info");}
             pager(infoPage,pages,cx+264,439,197);
 
         }
     }
-    // Flat vector cursor and subtle shadow, in the same coordinates as hits.
+     
     scene.overlayStart=scene.paint.size();
     if(mouseX>=0&&mouseY>=0){p.line(mx+1,my+2,mx+1,my+17,0x50243e37,2);p.line(mx+1,my+2,mx+12,my+12,0x50243e37,2);p.line(mx,my,mx,my+15,white,2.4f);p.line(mx,my,mx+10,my+10,white,2.4f);p.line(mx,my,mx,my+12,teal,1);p.line(mx,my,mx+8,my+8,teal,1);}
     auto transform=[&](UiRect& r){r.x=ox+r.x*scale;r.y=oy+r.y*scale;r.w*=scale;r.h*=scale;};
-    for(auto& paint:scene.paint){transform(paint.rect);paint.scale*=scale;paint.radius*=scale;}
+    for(auto& paint:scene.paint){transform(paint.rect);paint.scale*=scale;paint.radius*=scale;
+        if(paint.line){paint.endX=ox+paint.endX*scale;paint.endY=oy+paint.endY*scale;}}
     for(auto& h:hits)transform(h.rect);for(auto& r:ranges)transform(r.rect);
     if(scene.preview){transform(*scene.preview);previewArea=scene.preview;}
     return scene;

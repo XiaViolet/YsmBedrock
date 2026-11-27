@@ -8,6 +8,7 @@ import subprocess
 def verify(exe, legacy=False):
     def replay(events, **data):
         payload = dict(width=960, height=540, paint=True, events=events, **data)
+        payload.setdefault("locale", "zh_CN")
         result = subprocess.run([exe, '--ui-session', json.dumps(payload)], check=True,
                                 capture_output=True, encoding='utf-8', timeout=20)
         return json.loads(result.stdout)
@@ -26,7 +27,6 @@ def verify(exe, legacy=False):
     opened = [dict(op='open')]
     first = replay(opened)[0]
     x, y = hit(first, '本地设置')
-    # The physical cursor is at the centre on every render and button sample.
     locked = opened + [sample(poll=True)]
     for _ in range(2):
         locked += [sample(dx=(x-960)/2, dy=(y-540)/2), sample(poll=True)]
@@ -37,7 +37,6 @@ def verify(exe, legacy=False):
         print('0.29.24 reproduced both missed hits with the desktop cursor pinned.')
         return
 
-    # Moving absolute cursor wins, even with several high-rate events per frame.
     moving = opened + [sample(poll=True)]
     for px in (950, 930, 910):
         moving += [sample(window_x=px, dx=-5)]*4 + [sample(poll=True, window_x=px)]
@@ -48,8 +47,6 @@ def verify(exe, legacy=False):
     assert replay(edge)[-1]['pointer_source'] == 'absolute'
     assert replay(locked+[dict(op='close'), dict(op='open')])[-1]['pointer_source'] == 'absolute'
 
-    # Some clients publish changing physical x/y and zero dx/dy while the
-    # desktop cursor remains pinned. Button messages have no usable x/y.
     for anchor in (960, 0):
         positions = opened + [sample(window_x=anchor, poll=True)]
         for i in range(4):
@@ -75,7 +72,6 @@ def verify(exe, legacy=False):
     assert recovered['pointer_source'] == 'relative'
     assert replay(events+[sample(window_x=x, window_y=y, button=1, value=1)])[-1]['page'] == 4
 
-    # A real wheel action must fire once and close even after using mouse mode.
     wheel = [dict(op='open', wheel=True)]
     data = dict(descriptor={'properties': {'extra_animation': {'wave': '招手'}}})
     wx, wy = hit(replay(wheel, **data)[0], '招手')

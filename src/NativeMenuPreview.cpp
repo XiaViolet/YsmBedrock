@@ -3,7 +3,6 @@
 #include "mc/client/renderer/screen/MinecraftUIRenderContext.h"
 #include "mc/deps/core/string/HashedString.h"
 #include "mc/deps/minecraft_renderer/renderer/BedrockTextureData.h"
-#include <cmath>
 #include <atomic>
 #include <stdexcept>
 
@@ -11,45 +10,41 @@ namespace ysm {
 void NativeMenuPreview::reset() {
     layers = {};
     group.reset();
-    lastSize = 0;
-    // Releasing the last D3D11 device reference here can wait inside the display
-    // driver while Minecraft's UI render callback is still on the stack.
-    if (renderer) renderer->clearFrame();
+    lastFrame = 0;
 }
-
-void NativeMenuPreview::draw(MinecraftUIRenderContext& context, UiRect rect, PreviewMesh const& mesh,
-                            std::uint64_t frame, float pixelDensity) {
+void NativeMenuPreview::draw(MinecraftUIRenderContext& context, UiRect rect, MenuPreviewFrame const& image, std::uint64_t frame) {
     auto textures = context.mClient.getTextureGroup();
-    if (!textures) throw std::runtime_error("Native menu texture group unavailable");
+    if (!textures) return;
     if (group.lock() != textures) { reset(); group = textures; }
-    if (!renderer) renderer = std::make_unique<PreviewDepthRenderer>();
     float side = std::min(rect.w, rect.h);
     float x = rect.x + (rect.w-side)*.5f, y = rect.y + (rect.h-side)*.5f;
-    unsigned pixels = static_cast<unsigned>(std::clamp(std::ceil(side * pixelDensity), 224.f, 1024.f));
     static std::atomic_uint64_t uploadId{};
-    auto upload = [&](Layer& layer, std::shared_ptr<TextureImage const> const& image) {
-        Layer next{image, {}};
-        if (image) {
-            ModelTexture texture;
-            texture.uv = image;
-            next.uploaded = NativeTextureUpload::create(textures, texture, {}, "menu_" + std::to_string(++uploadId));
-        }
-        layer = std::move(next);
+    auto create = [&](std::shared_ptr<TextureImage const> const& bitmap) {
+        ModelTexture texture;
+        texture.uv = bitmap;
+        return NativeTextureUpload::create(textures, texture, {}, "menu_" + std::to_string(++uploadId));
     };
-    if (lastSize != pixels || frame != lastFrame) {
-        upload(layers[0], std::make_shared<TextureImage>(renderer->render(mesh, pixels)));
-        lastSize = pixels;
+    if (!layers[0].uploaded || frame != lastFrame) {
+        if (!layers[0].uploaded || !layers[0].uploaded->updateColor(image.bitmap)) {
+            layers[0].uploaded = create(std::make_shared<TextureImage const>(image.bitmap));
+        }
         lastFrame = frame;
     }
-    if (layers[1].source != mesh.background) upload(layers[1], mesh.background);
-    if (layers[2].source != mesh.foreground) upload(layers[2], mesh.foreground);
-    auto drawLayer = [&](Layer const& layer) {
+    auto updateLayer = [&](Layer& layer, std::shared_ptr<TextureImage const> const& source) {
+        if (layer.source == source) return;
+        auto uploaded = source ? create(source) : nullptr;
+        layer = {source, std::move(uploaded)};
+    };
+    updateLayer(layers[1], image.background);
+    updateLayer(layers[2], image.foreground);
+    auto drawLayer = [&](Layer const& layer, float scale) {
         if (!layer.uploaded) return;
-        context.drawImage(*layer.uploaded->textures().color->mClientTexture, {x,y}, {side,side}, {0,0}, {1,1}, false);
+        auto size = side * scale;
+        context.drawImage(*layer.uploaded->textures().color->mClientTexture, {x+(side-size)/2,y+(side-size)/2}, {size,size}, {0,0}, {1,1}, false);
         context.flushImages(mce::Color(255,255,255), 1.f, HashedString("ui_textured_and_glcolor"));
     };
-    drawLayer(layers[1]);
-    drawLayer(layers[0]);
-    drawLayer(layers[2]);
+    drawLayer(layers[1], 1.f);
+    drawLayer(layers[0], image.native ? 1.f : static_cast<float>(image.bitmap.width) / ModelPreview::BodyFramePixels);
+    drawLayer(layers[2], 1.f);
 }
 }

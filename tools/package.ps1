@@ -4,7 +4,7 @@ param([string]$OutputDirectory, [string]$ReleaseDirectory, [string]$BundledModel
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
 $projectRoot = Split-Path $PSScriptRoot -Parent
-if (!$OutputDirectory) { $OutputDirectory = Join-Path $projectRoot '../../导出' }
+if (!$OutputDirectory) { $OutputDirectory = Join-Path $projectRoot '../../exports' }
 if (!$ReleaseDirectory) { $ReleaseDirectory = Join-Path $projectRoot 'build/windows/x64/release' }
 $output = [IO.Directory]::CreateDirectory($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)).FullName
 $release = (Resolve-Path -LiteralPath $ReleaseDirectory).Path
@@ -44,7 +44,6 @@ $mod = Join-Path $bundle 'mods/YsmBedrock'
 $source = Join-Path $bundle 'source'
 $published = @()
 function New-ReleaseArchive([string]$root,[string]$path,[string]$prefix,[switch]$SourceArchive) {
-    # Windows PowerShell 5.1 can emit backslashes with ZipFile.CreateFromDirectory.
     $zip = [IO.Compression.ZipFile]::Open($path,[IO.Compression.ZipArchiveMode]::Create)
     try {
         foreach ($file in Get-ChildItem -LiteralPath $root -File -Recurse -Force) {
@@ -52,7 +51,6 @@ function New-ReleaseArchive([string]$root,[string]$path,[string]$prefix,[switch]
             [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip,$file.FullName,$entry,[IO.Compression.CompressionLevel]::Optimal)
         }
         if ($SourceArchive) {
-            # The engineering bundle already carries this file under mods/YsmBedrock/models.
             foreach ($model in $models) {
             [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip,(Join-Path "$mod/models" $model.filename),
                 ("assets/"+$model.filename),[IO.Compression.CompressionLevel]::Optimal)
@@ -89,7 +87,6 @@ try {
             Copy-Item -Destination (Join-Path $source $dir)
     }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'legacy_v3_bridge/bridge.cpp'), (Join-Path $PSScriptRoot 'legacy_v3_bridge/CMakeLists.txt') -Destination "$source/tools/legacy_v3_bridge"
-    # Only the project's synthetic fixtures are redistributable with the tests.
     $fixtures = @('MeshCoordinateLab.zip','SignedCubeLab.zip','SignedCubeLabAllCutout.zip','SignedFaceLab.zip',
         'SignedFaceLabAllCutout.zip','UvLabBoneMirror.zip','UvLabBox.zip','UvLabBoxMirror.zip','UvLabCubeMirror.zip',
         'UvLabMissingSize.zip','UvLabPlain.zip','WorldInputs.zip','java_particle_registry_1_20_1.json',
@@ -109,12 +106,12 @@ try {
     Copy-Item -LiteralPath "$projectRoot/README.md","$PSScriptRoot/ysm_relay.py","$PSScriptRoot/install.ps1","$release/ysm-inspect.exe","$release/YsmLegacyV3.dll" -Destination $bundle
     @"
 YsmBedrock $version
-LeviLauncher：在对应实例中导入 $name.mcmod。
-BedrockBoot：退出对应游戏实例，在模组管理中选择 LeviLamina，点击「导入模组」，直接选择 $bedrockBootArchive。
-工程包：解压后退出该游戏实例，运行 .\install.ps1 -Instance '游戏实例目录'。
-适用 Minecraft 1.26.60.05、LeviLamina 26.60.7、26.60.8 或 26.60.9 的 Windows 客户端。
-Alt+Y 打开模型库并导入模型，Z 打开动作转盘。房间共享和验证范围见 README.md。
-内置官方基础款酒狐和魔法酒狐。署名、来源及模型许可见 mods/YsmBedrock/licenses。
+LeviLauncher: Import $name.mcmod into the appropriate instance.
+BedrockBoot: Close the game, select LeviLamina under mod management, then import $bedrockBootArchive.
+Engineering bundle: Extract it, close the game, and run .\install.ps1 -Instance 'game instance directory'.
+Requires Minecraft 1.26.60.05 and LeviLamina 26.60.7, 26.60.8 or 26.60.9 on Windows.
+Alt+Y opens the model library and Z opens the emote wheel. See README.md for room sharing and verification.
+Includes the official Wine Fox and Magical Wine Fox models. See mods/YsmBedrock/licenses for attribution, sources and licenses.
 "@ | Set-Content -LiteralPath "$bundle/安装说明.txt" -Encoding utf8
     $checks = Join-Path $projectRoot "build/verification/release-$version"
     foreach ($file in @('protocol.txt','native-room-integration.txt','ui-test.txt','mouse-replay.txt','native-touch.txt','relay-render.txt','packaging.txt','official-model.json','regression.txt')) {
@@ -124,7 +121,6 @@ Alt+Y 打开模型库并导入模型，Z 打开动作转盘。房间共享和验
         }
     }
     New-ReleaseArchive $mod (Join-Path $stage $archives[0]) ''
-    # BedrockBoot extracts the ZIP into ll.mods and scans its immediate subdirectories.
     New-ReleaseArchive $mod (Join-Path $stage $bedrockBootArchive) 'YsmBedrock/'
     New-ReleaseArchive $source (Join-Path $stage $archives[1]) '' -SourceArchive
     New-ReleaseArchive $bundle (Join-Path $stage $archives[2]) "$name-preview/"

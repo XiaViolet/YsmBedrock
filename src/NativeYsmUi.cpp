@@ -1,6 +1,8 @@
 #include "NativeYsmUi.h"
 #include "PortraitCadence.h"
 #include "NativeMenuPreview.h"
+#include "PreviewDepthRenderer.h"
+#include "PreviewWorker.h"
 #include "NativePortraitParrots.h"
 #include "NativeShoulderParrot.h"
 #include "mc/client/player/LocalPlayer.h"
@@ -113,23 +115,25 @@ struct NativeYsmUi::Impl {
     std::atomic<std::uint64_t> releaseRetries=0;
     std::shared_ptr<ModelPreview const> preview, candidate;
     std::weak_ptr<ModelPreview const> lastRenderer;
-    using MenuFrame = std::variant<TextureImage, PreviewMesh>;
+    using Worker = PreviewWorker<std::unique_ptr<PreviewDepthRenderer>, MenuPreviewFrame>;
+    std::unique_ptr<Worker> previewWorker;
     NativeMenuPreview nativePreview;
-    std::optional<PreviewMesh> meshFrame;
-    std::uint64_t meshRevision = 0;
+    std::optional<MenuPreviewFrame> menuFrame;
+    std::uint64_t meshRevision = 0, previewGeneration = 0;
+    unsigned lastPixels = 0;
+    PortraitCadence menuCadence;
     bool nativeEnabled = true, lastNative = false;
     std::string nativeFailure;
     std::weak_ptr<ModelPreview const> failedRenderer;
+    std::weak_ptr<ModelPreview const> failedBitmapRenderer;
     std::size_t failedTexture = 0;
     struct CandidateFrame {
-        std::shared_ptr<ModelPreview const> owner;
-        std::string clip;
-        std::size_t index;
-        bool native, live;
-        std::future<MenuFrame> pixels;
+        std::uint64_t generation;
+        bool native;
+        std::future<MenuPreviewFrame> pixels;
     };
     std::optional<CandidateFrame> candidateFrame;
-    bool primeCandidate = false;
+    bool primeCandidate = true;
     std::size_t candidateTexture = 0;
     bool capture=false;
     std::array<bool,4> gameButtons{},uiButtons{};
@@ -187,6 +191,9 @@ struct NativeYsmUi::Impl {
     std::shared_ptr<BedrockTextureData const> texture;
     std::uint64_t imageId=0;
     UiTextAtlas textAtlas;
+    UiTextMaskCache textMasks;
+    std::vector<UiVertex> cachedMainMesh;
+    std::uint64_t shapeKey = 0;
     std::uint64_t textKey=0;
     std::weak_ptr<mce::TextureGroup> textGroup;
     std::unique_ptr<ResourceLocation> textLocation;
@@ -197,19 +204,29 @@ struct NativeYsmUi::Impl {
         textLocation.reset();textGroup.reset();textKey=0;
     }
     void clearTexture() {
-        meshFrame.reset();nativePreview.reset();
+        menuFrame.reset();nativePreview.reset();
         texture.reset();if(location)if(auto owner=group.lock())owner->unloadTexture(*location,false);location.reset();group.reset();
     }
     void uploadPreview(IClientInstance& client, TextureImage const& bitmap) {
         auto textures = client.getTextureGroup();
         if (!textures) return;
-        mce::Image image(bitmap.width, bitmap.height, 1, mce::ImageFormat::RGBA8Unorm, mce::ImageUsage::Data);
-        image.resizeImageBytesToFitImageDescription();
-        std::memcpy(image.mImageBytes.data(), bitmap.rgba.data(), bitmap.rgba.size());
-        image.mAlphaUsage = mce::AlphaUsage::Transparent;
+        auto makeImage = [&] {
+            mce::Image image(bitmap.width, bitmap.height, 1, mce::ImageFormat::RGBA8Unorm, mce::ImageUsage::Data);
+            image.resizeImageBytesToFitImageDescription();
+            std::memcpy(image.mImageBytes.data(), bitmap.rgba.data(), bitmap.rgba.size());
+            image.mAlphaUsage = mce::AlphaUsage::Transparent;
+            return cg::ImageBuffer(std::move(image));
+        };
+        if (group.lock() == textures && location && texture &&
+            texture->mTextureDescription->mWidth == bitmap.width && texture->mTextureDescription->mHeight == bitmap.height &&
+            textures->updateTextureInPlace(*location, makeImage())) {
+            previewFrameScale = static_cast<float>(bitmap.width) / ModelPreview::BodyFramePixels;
+            return;
+        }
         auto key = std::make_unique<ResourceLocation>(Core::PathView("textures/ysm_ui/preview_" + std::to_string(++imageId)));
-        auto uploaded = textures->uploadTexture(*key, cg::ImageBuffer(std::move(image))).mBedrockTextureData;
-        clearTexture();
+        auto uploaded = textures->uploadTexture(*key, makeImage()).mBedrockTextureData;
+        texture.reset();
+        if (location) if (auto owner = group.lock()) owner->unloadTexture(*location, false);
         texture = std::move(uploaded);
         location = std::move(key);
         group = textures;
@@ -219,7 +236,8 @@ struct NativeYsmUi::Impl {
         mouseCapture.close();
         NativeMenuTouch::close();
         touchWindow = nullptr;
-        ui.close();pointer.reset();retireTexture=true;
+        if (ui.isOpen()) { retireTexture=true; ++previewGeneration; lastRenderer.reset(); }
+        ui.close();pointer.reset();
         return std::exchange(capture,false);
     }
 };
@@ -238,7 +256,7 @@ std::optional<std::uint64_t> NativeYsmUi::updateHud(bool enabled, bool debugOver
     bool native = settings.value("native_menu_preview", true);
     if (native != impl->nativeEnabled) { impl->failedRenderer.reset(); impl->nativeFailure.clear(); }
     impl->nativeEnabled = native;
-    impl->portraitCadence.rate(settings.value("hud_fps",30));
+    impl->portraitCadence.rate(settings.value("hud_fps",60));
     impl->portrait = portrait;
     impl->debugOverlay = debugOverlay;
     bool forceRelative = settings.value("relative_menu_pointer", false);
@@ -253,7 +271,7 @@ std::optional<std::uint64_t> NativeYsmUi::updateHud(bool enabled, bool debugOver
     if (impl->ui.isOpen()) return impl->menuSession;
     impl->candidate.reset();
     // Destroy an async result only after completion. A running future can block this tick.
-    if (impl->candidateFrame && impl->candidateFrame->pixels.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+    if (!portrait && impl->candidateFrame && impl->candidateFrame->pixels.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
         impl->candidateFrame.reset();
     return std::nullopt;
 }
@@ -261,9 +279,6 @@ void NativeYsmUi::updateMenu(IClientInstance& client, std::uint64_t session, UiS
     std::unique_lock lock(impl->mutex);
     if (!impl->ui.isOpen() || session != impl->menuSession) return;
     impl->candidateTexture = snapshot.browsing ? snapshot.browsing->texture : 0;
-    if (impl->candidateFrame && impl->candidateFrame->owner != candidate && impl->candidateFrame->owner != impl->preview &&
-        impl->candidateFrame->pixels.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
-        impl->candidateFrame.reset();
     impl->candidate = std::move(candidate);
     impl->ui.update(std::move(snapshot));
     impl->menuReady = true;
@@ -320,13 +335,15 @@ void NativeYsmUi::maintainMouse(IClientInstance& client) {
     }
 }
 void NativeYsmUi::retireLibraryPreview() {
-    std::optional<Impl::CandidateFrame> retired;
+    std::unique_ptr<Impl::Worker> worker;
     {
         std::scoped_lock lock(impl->mutex);
-        retired = std::exchange(impl->candidateFrame, std::nullopt);
+        ++impl->previewGeneration;
+        impl->candidateFrame.reset();
         impl->candidate.reset();
+        worker = std::move(impl->previewWorker);
     }
-    if (retired) retired->pixels.wait();
+    worker.reset();
 }
 void NativeYsmUi::beginFrame(){impl->frames.begin();}
 bool NativeYsmUi::key(IClientInstance& client,int code,bool down,bool control) {
@@ -388,7 +405,7 @@ bool NativeYsmUi::mouse(IClientInstance& client,int button,int value,float x,flo
 std::vector<UiCommand> NativeYsmUi::takeCommands(){std::scoped_lock lock(impl->mutex);return impl->ui.takeCommands();}
 void NativeYsmUi::render(MinecraftUIRenderContext& context, AnimationRuntime const& animation) {
     std::unique_lock lock(impl->mutex);
-    if(impl->retireTexture){impl->clearTexture();impl->clearTextTexture();impl->retireTexture=false;}
+    if(impl->retireTexture){impl->clearTexture();impl->clearTextTexture();impl->lastRenderer.reset();++impl->previewGeneration;impl->retireTexture=false;}
     bool hudOnly = !impl->ui.isOpen();
     if (!hudOnly && !impl->menuReady) return;
     bool portraitOnly = hudOnly && impl->portrait && impl->preview;
@@ -396,7 +413,12 @@ void NativeYsmUi::render(MinecraftUIRenderContext& context, AnimationRuntime con
     if(!impl->frames.claim()){++impl->skippedViews;return;}
     IClientInstance& client=context.mClient;
     if(!client.getLocalPlayer()||client.getTopScreenName()!="hud_screen"){
-        if (hudOnly) return;
+        if (hudOnly) {
+            if (!impl->lastRenderer.expired() || impl->menuFrame || impl->texture) {
+                ++impl->previewGeneration;impl->lastRenderer.reset();impl->clearTexture();impl->clearTextTexture();
+            }
+            return;
+        }
         auto restore=impl->closeUi();lock.unlock();restoreMouse(&client,restore);return;
     }
     auto gui=client.getGuiData();auto const& size=*gui->mScreenSizeData;
@@ -462,7 +484,13 @@ void NativeYsmUi::render(MinecraftUIRenderContext& context, AnimationRuntime con
         }
     }
     auto split=std::min(scene.overlayStart,scene.paint.size());
-    auto mainMesh=buildUiMesh(std::span<UiPaint const>(scene.paint).first(split));
+    auto mainPaint = std::span<UiPaint const>(scene.paint).first(split);
+    auto shapeKey = uiShapeKey(mainPaint);
+    if (shapeKey != impl->shapeKey) {
+        impl->cachedMainMesh = buildUiMesh(mainPaint);
+        impl->shapeKey = shapeKey;
+    }
+    auto const& mainMesh=impl->cachedMainMesh;
     auto cursorMesh=buildUiMesh(std::span<UiPaint const>(scene.paint).subspan(split));
     context.saveCurrentClippingRectangle();context.setFullClippingRectangle();
     struct RestoreClip {MinecraftUIRenderContext& context;~RestoreClip(){context.restoreSavedClippingRectangle();}} restoreClip{context};
@@ -470,129 +498,141 @@ void NativeYsmUi::render(MinecraftUIRenderContext& context, AnimationRuntime con
     auto nativeDraws=drawMesh(screen,mainMesh);
     auto textPaint=std::span<UiPaint const>(scene.paint).first(split);
     auto textKey=uiTextKey(textPaint,impl->textDensity);
-    if(!textPaint.empty() && (textKey!=impl->textKey||!impl->textTexture)) {
-        auto atlas=rasterizeUiText(textPaint,impl->textDensity);auto group=client.getTextureGroup();
+    bool hasText = std::any_of(textPaint.begin(), textPaint.end(), [](auto const& paint){ return !paint.text.empty(); });
+    if(hasText && (textKey!=impl->textKey||!impl->textTexture||impl->textGroup.lock()!=client.getTextureGroup())) {
+        auto atlas=rasterizeUiText(textPaint,impl->textDensity,&impl->textMasks);auto group=client.getTextureGroup();
         if(group) {
-            mce::Image image(atlas.image.width,atlas.image.height,1,mce::ImageFormat::RGBA8Unorm,mce::ImageUsage::Data);
-            image.resizeImageBytesToFitImageDescription();std::memcpy(image.mImageBytes.data(),atlas.image.rgba.data(),atlas.image.rgba.size());image.mAlphaUsage=mce::AlphaUsage::Transparent;
-            auto location=std::make_unique<ResourceLocation>(Core::PathView("textures/ysm_ui/type_"+std::to_string(++impl->imageId)));
-            auto& upload=group->uploadTexture(*location,cg::ImageBuffer(std::move(image)));auto texture=upload.mBedrockTextureData;
-            impl->clearTextTexture();impl->textTexture=texture;impl->textLocation=std::move(location);impl->textGroup=group;impl->textAtlas=std::move(atlas);impl->textKey=textKey;
+            auto makeImage = [&] {
+                mce::Image image(atlas.image.width,atlas.image.height,1,mce::ImageFormat::RGBA8Unorm,mce::ImageUsage::Data);
+                image.resizeImageBytesToFitImageDescription();std::memcpy(image.mImageBytes.data(),atlas.image.rgba.data(),atlas.image.rgba.size());image.mAlphaUsage=mce::AlphaUsage::Transparent;
+                return cg::ImageBuffer(std::move(image));
+            };
+            if (!(impl->textLocation && impl->textTexture && impl->textGroup.lock()==group &&
+                impl->textAtlas.image.width==atlas.image.width && impl->textAtlas.image.height==atlas.image.height &&
+                group->updateTextureInPlace(*impl->textLocation,makeImage()))) {
+                auto location=std::make_unique<ResourceLocation>(Core::PathView("textures/ysm_ui/type_"+std::to_string(++impl->imageId)));
+                auto texture=group->uploadTexture(*location,makeImage()).mBedrockTextureData;
+                impl->clearTextTexture();impl->textTexture=texture;impl->textLocation=std::move(location);impl->textGroup=group;
+            }
+            std::vector<unsigned char>().swap(atlas.image.rgba);
+            impl->textAtlas=std::move(atlas);impl->textKey=textKey;
         }
     }
-    if(!textPaint.empty() && impl->textTexture) {
+    if(hasText && impl->textTexture) {
         for(auto const& q:impl->textAtlas.quads)context.drawImage(*impl->textTexture->mClientTexture,{q.rect.x,q.rect.y},{q.rect.w,q.rect.h},{q.uv[0],q.uv[1]},{q.uv[2],q.uv[3]},false);
         context.flushImages(mce::Color(255,255,255),1.f,HashedString("ui_textured_and_glcolor"));
     }
     auto const& renderer = scene.libraryPreview ? impl->candidate : impl->preview;
     auto textureIndex = scene.libraryPreview ? impl->candidateTexture : impl->textureIndex;
     std::string_view previewBackend = "none";
-    if(scene.preview && renderer) {
+    if (scene.preview && renderer) {
         bool native = !hudOnly && impl->nativeEnabled &&
             (impl->failedRenderer.lock() != renderer || impl->failedTexture != textureIndex);
         bool liveMode = portraitOnly || scene.livePlayerPreview;
-        bool backendChanged = impl->lastNative != native || impl->lastLive != liveMode || impl->lastLibrary != scene.libraryPreview;
-        impl->lastLive=liveMode;
-        impl->lastLibrary=scene.libraryPreview;
-        bool hasFrame = native ? impl->meshFrame.has_value() : bool(impl->texture);
-        auto fallback = [&](std::exception const& error) {
-            impl->failedRenderer = renderer;
-            impl->failedTexture = textureIndex;
-            impl->nativeFailure = error.what();
+        auto now = std::chrono::steady_clock::now();
+        auto& cadence = portraitOnly ? impl->portraitCadence : impl->menuCadence;
+        auto side = std::min(scene.preview->w, scene.preview->h);
+        auto pixels = static_cast<unsigned>(std::clamp(std::ceil(side * impl->textDensity / 32.f) * 32.f, 224.f, 512.f));
+        if (!native) pixels = 0;
+        bool changed = impl->lastRenderer.lock() != renderer || impl->lastClip != scene.previewClip ||
+            impl->lastTextureIndex != textureIndex || impl->lastAnimatePreview != scene.animatePreview ||
+            impl->lastNative != native || impl->lastLive != liveMode || impl->lastLibrary != scene.libraryPreview;
+        if (changed) {
+            ++impl->previewGeneration;
             impl->clearTexture();
-        };
-        impl->lastNative = native;
-        auto now=std::chrono::steady_clock::now();
-        bool changedClip=impl->lastRenderer.lock()!=renderer || impl->lastClip!=scene.previewClip||impl->lastTextureIndex!=textureIndex
-            ||impl->lastAnimatePreview!=scene.animatePreview||!hasFrame||backendChanged;
-        bool changedView=impl->lastCamera!=scene.previewCamera;
-        auto elapsed=now-impl->lastPreview;
-        if (scene.libraryPreview || scene.livePlayerPreview) {
-            auto changed = impl->lastRenderer.lock() != renderer || impl->lastClip != scene.previewClip
-                || impl->lastTextureIndex != textureIndex || !impl->lastAnimatePreview || backendChanged;
-            if (changed) {
-                impl->clearTexture();
-                impl->primeCandidate = true;
-                impl->previewStarted = now;
-                impl->lastPreview = {};
-                impl->portraitCadence.reset();
-            }
-            if (impl->candidateFrame && impl->candidateFrame->pixels.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                auto completed = std::move(*impl->candidateFrame);
-                impl->candidateFrame.reset();
-                if (completed.owner == renderer && completed.clip == scene.previewClip && completed.index == textureIndex &&
-                    completed.native == native && completed.live == scene.livePlayerPreview && !impl->primeCandidate) {
-                    if (native) {
-                        try { impl->meshFrame = std::get<PreviewMesh>(completed.pixels.get()); ++impl->meshRevision; }
-                        catch (std::exception const& error) { fallback(error); }
-                    } else impl->uploadPreview(client, std::get<TextureImage>(completed.pixels.get()));
-                }
-            }
-            bool due = scene.livePlayerPreview ? impl->portraitCadence.due(now) : elapsed>std::chrono::milliseconds(changedView ? 33 : 125);
-            if (!impl->candidateFrame && (impl->primeCandidate || due)) {
-                auto pose = scene.livePlayerPreview ? animation.previewPose() : nullptr;
-                if (!scene.livePlayerPreview || pose) {
-                    auto time = .12 + std::chrono::duration<double>(now - impl->previewStarted).count();
-                    auto pixels = std::async(std::launch::async, [renderer, clip=scene.previewClip, camera=scene.previewCamera,
-                                                                 textureIndex, time, native, pose, prime=impl->primeCandidate]() -> Impl::MenuFrame {
-                        if (prime && !pose) renderer->samplePose(clip, 0, textureIndex);
-                        if (native) return renderer->mesh(clip, time, camera, textureIndex, pose.get());
-                        return renderer->render(clip, time, camera, textureIndex,!pose,pose.get());
-                    });
-                    impl->candidateFrame.emplace(Impl::CandidateFrame{renderer,scene.previewClip,textureIndex,native,scene.livePlayerPreview,std::move(pixels)});
-                    impl->primeCandidate = false;
-                    impl->lastPreview = now;
-                    impl->lastCamera = scene.previewCamera;
-                    if (scene.livePlayerPreview) impl->portraitCadence.submitted(now);
-                }
-            }
+            impl->primeCandidate = true;
+            impl->previewStarted = now;
+            impl->lastPreview = {};
+            cadence.reset();
             impl->lastRenderer = renderer;
             impl->lastClip = scene.previewClip;
             impl->lastTextureIndex = textureIndex;
-            impl->lastAnimatePreview = true;
-        } else if(changedClip || (changedView && elapsed>std::chrono::milliseconds(33))
-            || (scene.animatePreview && (portraitOnly ? impl->portraitCadence.due(now) : elapsed>std::chrono::milliseconds(125)))) {
-            auto live = portraitOnly ? animation.previewPose() : std::shared_ptr<PreviewPose const>{};
-            if (portraitOnly && !live) return;
-            if(changedClip){impl->previewStarted=now;if(!portraitOnly)renderer->samplePose(scene.previewClip,0,textureIndex);}
-            auto time=.12+std::chrono::duration<double>(now-impl->previewStarted).count();
-            if (!scene.animatePreview) time=.12;
-            PreviewShoulders shoulders;
-            if (portraitOnly) {
-                impl->portraitCadence.submitted(now);
-                auto variants = shoulderParrotVariants(*client.getLocalPlayer());
-                shoulders = impl->portraitParrots.get(client, variants);
-            }
-            if (native) {
-                try { impl->meshFrame = renderer->mesh(scene.previewClip, time, scene.previewCamera, textureIndex); ++impl->meshRevision; }
-                catch (std::exception const& error) { fallback(error); }
-            } else {
-                auto bitmap=renderer->render(scene.previewClip,time,scene.previewCamera,textureIndex,!portraitOnly,live.get(),shoulders);
-                impl->uploadPreview(client,bitmap);
-            }
-            impl->lastRenderer=renderer;impl->lastPreview=now;
-            impl->lastClip=scene.previewClip;impl->lastCamera=scene.previewCamera;impl->lastTextureIndex=textureIndex;
-            impl->lastAnimatePreview=scene.animatePreview;
+            impl->lastAnimatePreview = scene.animatePreview;
+            impl->lastNative = native;
+            impl->lastLive = liveMode;
+            impl->lastLibrary = scene.libraryPreview;
+            impl->failedBitmapRenderer.reset();
         }
-        if (native && impl->meshFrame) {
+        auto fail = [&](std::exception const& error, bool wasNative) {
+            impl->nativeFailure = error.what();
+            if (wasNative) {
+                impl->failedRenderer = renderer;
+                impl->failedTexture = textureIndex;
+            } else impl->failedBitmapRenderer = renderer;
+            ++impl->previewGeneration;
+            impl->clearTexture();
+        };
+        if (impl->candidateFrame && impl->candidateFrame->pixels.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            auto completed = std::move(*impl->candidateFrame);
+            impl->candidateFrame.reset();
+            if (completed.generation == impl->previewGeneration) {
+                try {
+                    auto frame = completed.pixels.get();
+                    if (!frame.native) { impl->uploadPreview(client, frame.bitmap); if (!impl->texture) impl->primeCandidate = true; }
+                    impl->menuFrame = std::move(frame);
+                    ++impl->meshRevision;
+                    impl->nativeFailure.clear();
+                } catch (std::exception const& error) { fail(error, completed.native); }
+            }
+        }
+        bool changedView = impl->lastCamera != scene.previewCamera || impl->lastPixels != pixels ||
+            (!native && impl->texture && impl->group.lock() != client.getTextureGroup());
+        bool needsFrame = impl->primeCandidate || changedView || scene.animatePreview;
+        bool allowed = native ? (impl->failedRenderer.lock() != renderer || impl->failedTexture != textureIndex)
+                              : impl->failedBitmapRenderer.lock() != renderer;
+        if (!impl->candidateFrame && allowed && needsFrame && (impl->primeCandidate || cadence.due(now))) {
+            auto pose = liveMode ? animation.previewPose() : nullptr;
+            if (!liveMode || pose) {
+                NativePortraitParrots::Snapshot shoulders;
+                if (portraitOnly) shoulders = impl->portraitParrots.get(client, shoulderParrotVariants(*client.getLocalPlayer()));
+                auto time = scene.animatePreview ? .12 + std::chrono::duration<double>(now - impl->previewStarted).count() : .12;
+                if (!impl->previewWorker) impl->previewWorker = std::make_unique<Impl::Worker>();
+                auto work = impl->previewWorker->submit([renderer, clip=scene.previewClip, camera=scene.previewCamera,
+                    textureIndex, time, native, pose=std::move(pose), shoulders=std::move(shoulders), pixels,
+                    prime=impl->primeCandidate](std::unique_ptr<PreviewDepthRenderer>& gpu) -> MenuPreviewFrame {
+                    if (prime && !pose) renderer->samplePose(clip, 0, textureIndex);
+                    MenuPreviewFrame frame;
+                    frame.native = native;
+                    if (native) {
+                        if (!gpu) gpu = std::make_unique<PreviewDepthRenderer>();
+                        auto mesh = renderer->mesh(clip, time, camera, textureIndex, pose.get());
+                        frame.vertices = mesh.vertices.size();
+                        frame.background = mesh.background;
+                        frame.foreground = mesh.foreground;
+                        frame.bitmap = gpu->render(mesh, pixels);
+                    } else frame.bitmap = renderer->render(clip, time, camera, textureIndex, !pose, pose.get(), shoulders.view());
+                    return frame;
+                });
+                impl->candidateFrame.emplace(Impl::CandidateFrame{impl->previewGeneration, native, std::move(work)});
+                impl->primeCandidate = false;
+                impl->lastPreview = now;
+                impl->lastCamera = scene.previewCamera;
+                impl->lastPixels = pixels;
+                cadence.submitted(now);
+            }
+        }
+        if (native && impl->menuFrame) {
             try {
-                impl->nativePreview.draw(context, *scene.preview, *impl->meshFrame, impl->meshRevision, impl->textDensity);
+                impl->nativePreview.draw(context, *scene.preview, *impl->menuFrame, impl->meshRevision);
                 previewBackend = "native_depth_preview";
-                impl->nativeFailure.clear();
-            } catch (std::exception const& error) { fallback(error); }
-        } else if(!native && impl->texture) {
+            } catch (std::exception const& error) { fail(error, true); }
+        } else if (!native && impl->texture) {
             previewBackend = "bitmap";
-            auto r=*scene.preview;auto side=std::min(r.w,r.h) * impl->previewFrameScale;
-            context.drawImage(*impl->texture->mClientTexture,{r.x+(r.w-side)/2,r.y+(r.h-side)/2},{side,side},{0,0},{1,1},false);
+            auto r = *scene.preview; auto size = side * impl->previewFrameScale;
+            context.drawImage(*impl->texture->mClientTexture, {r.x+(r.w-size)/2,r.y+(r.h-size)/2}, {size,size}, {0,0}, {1,1}, false);
             context.flushImages(mce::Color(255,255,255),1.f,HashedString("ui_textured_and_glcolor"));
         }
+    } else if (!impl->lastRenderer.expired() || impl->menuFrame || impl->texture) {
+        ++impl->previewGeneration;
+        impl->lastRenderer.reset();
+        impl->clearTexture();
     }
     nativeDraws+=drawMesh(screen,cursorMesh);++impl->renderedFrames;
     auto now=std::chrono::steady_clock::now();
     if(now-impl->reportAt>std::chrono::seconds(1)&&!impl->diagnostics.empty()) {
         try {auto path=impl->diagnostics.parent_path()/"ui-render-status.json";
             std::ofstream(path)<<Json{{"frames",impl->renderedFrames},{"duplicate_views_skipped",impl->skippedViews},{"shape_draw_calls",nativeDraws},
-                {"live_player_preview",scene.livePlayerPreview || portraitOnly},{"portrait_target_fps",impl->portraitCadence.rate()},{"preview_backend",previewBackend},{"preview_vertices",impl->meshFrame ? impl->meshFrame->vertices.size() : 0},
+                {"live_player_preview",scene.livePlayerPreview || portraitOnly},{"portrait_target_fps",impl->portraitCadence.rate()},{"menu_target_fps",impl->menuCadence.rate()},{"preview_job_pending",impl->candidateFrame.has_value()},{"preview_frames_completed",impl->meshRevision},{"preview_backend",previewBackend},{"preview_vertices",impl->menuFrame ? impl->menuFrame->vertices : 0},
                 {"native_preview_error",impl->nativeFailure},{"portrait_shoulders", impl->portraitParrots.report()}, {"mouse_grabbed",client.getMouseGrabbed()},{"menu_owns_mouse",impl->mouseCapture.owns(&client)},
                 {"game_capture_requests_blocked",impl->mouseCapture.blockedCount()},{"release_retries",impl->releaseRetries.load()},
                 {"menu_pointer_source",impl->pointer.source()},

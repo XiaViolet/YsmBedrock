@@ -18,13 +18,13 @@
 
 namespace ysm {
 static constexpr std::size_t MaxTotal = 256 * 1024 * 1024;
-// Full-resolution player, PBR and replaced-entity textures share this budget.
-// Keep encoded resources and decoded audio bounded by their existing limits.
+ 
+ 
 static constexpr std::size_t MaxLoadedModel = 512 * 1024 * 1024;
 
-// YSM 2.6.5 merges its loaded player groups in this order before filling
-// defaults. Verified with conflicting pairs and both manifest key orders.
-// fp_arm is loaded separately and never competes with body actions.
+ 
+ 
+ 
 static constexpr char const* PlayerAnimationGroups[]{
     "fp_arm", "slashblade", "carryon", "tlm", "irons_spell_books", "immersive_melodies",
     "extra", "tac", "main", "swem", "arm", "parcool",
@@ -65,7 +65,7 @@ class Source {
     int zipIndex(std::string const& name) {
         auto path = prefix + name;
         if (auto found = zipFiles.find(path); found != zipFiles.end()) return static_cast<int>(found->second);
-        // Older packages sometimes refer to a member with different casing.
+         
         return mz_zip_reader_locate_file(&zip, path.c_str(), nullptr, 0);
     }
     std::filesystem::path directoryPath(std::string const& name) const {
@@ -115,7 +115,7 @@ public:
                 selectRoot(legacy->paths());
             }
         } else {
-            // miniz accepts a FILE*, which preserves Windows Unicode paths.
+             
             FILE* file = nullptr;
             if (_wfopen_s(&file, path.c_str(), L"rb") != 0 || !file)
                 throw std::runtime_error("Cannot open model archive");
@@ -238,9 +238,9 @@ public:
         for (auto const& [name, digest] : resourceHashes) out.emplace(name, directoryPath(name));
     }
     std::string localContentKey() const {
-        // Length framing, sorted relative names and hashes of every consumed
-        // asset make repacked ZIPs/folders equivalent, without coupling state
-        // to selected texture, source filename or native rendering cache keys.
+         
+         
+         
         std::string payload = "YsmBedrock.SourceContent.1\n";
         for (auto const& [name, digest] : resourceHashes)
             payload += std::to_string(name.size()) + ":" + name + ":" + digest + "\n";
@@ -255,7 +255,7 @@ public:
             if (depth > 128) throw std::runtime_error("Room model JSON exceeds complexity limit (depth): " + path);
             if (value.is_string() && value.get_ref<std::string const&>().size() > (1u << 20))
                 throw std::runtime_error("Room model JSON exceeds string length limit: " + path);
-            // Count each array, object, and scalar once across the entire model.
+             
             if ((event == Event::array_start || event == Event::object_start || event == Event::value)
                 && ++roomJsonNodes > 6'000'000)
                 throw std::runtime_error("Room model JSON exceeds complexity limit (node count): " + path);
@@ -291,8 +291,8 @@ public:
             }
         }
         if (decodedV3) {
-            // The V3 reader returns the original, top-origin Java vertex UVs.
-            // Bedrock poly_mesh samples from the bottom of the texture.
+             
+             
             for (auto& model : document.at("minecraft:geometry")) {
                 for (auto& bone : model.at("bones")) {
                     auto mesh = bone.find("poly_mesh");
@@ -514,7 +514,7 @@ static Json readModelLanguages(Source& source, Json const& descriptor, std::vect
                 for (auto const& [key, value] : strings.items()) if (value.is_string()) entries[key] = value;
                 auto locale = path.substr(prefixSize);
                 locale.resize(locale.size() - 5);
-                languages[locale] = std::move(entries);
+                languages[modelLocale(std::move(locale))] = std::move(entries);
             } catch (std::exception const& error) { report(path, error); }
         }
     } catch (std::exception const& error) { report(folder, error); }
@@ -529,14 +529,20 @@ std::string modelLocale(std::string locale) {
     return locale;
 }
 
-Json const& modelLanguage(Json const& languages, std::string_view locale) {
-    static Json const empty = Json::object();
-    auto selected = languages.find(locale);
-    if (selected != languages.end() && selected->is_object()) return *selected;
-    // YSM 2.6.5 selects a whole language file. A missing key in an
-    // existing locale falls back to the manifest field in the caller.
-    auto fallback = languages.find("en_us");
-    return fallback != languages.end() && fallback->is_object() ? *fallback : empty;
+Json modelLanguage(Json const& languages, std::string_view locale) {
+    Json result = Json::object();
+    if (!languages.is_object()) return result;
+    auto merge = [&](std::string_view code) {
+        auto it = languages.find(code);
+        if (it != languages.end() && it->is_object()) for (auto const& [key, value] : it->items())
+            if (value.is_string() && !value.get_ref<std::string const&>().empty()) result[key] = value;
+    };
+    auto normalized = modelLocale(std::string(locale));
+    merge("zh_tw");
+    merge("zh_cn");
+    merge("en_us");
+    merge(normalized);
+    return result;
 }
 
 static Json catalogTranslations(Json const& languages) {
@@ -558,9 +564,9 @@ Json ModelPack::uiInfo(std::filesystem::path const& source) {
 
 Json ModelPack::catalogLanguages() const { return catalogTranslations(languages); }
 
-// Older YSMParser exports store the arrow's texture set among the player
-// variants and omit the reference on files.projectiles.arrow. The original
-// binary keeps the two texture lists separate. Normalize only this layout.
+ 
+ 
+ 
 static bool restoreExportedArrowTexture(Json& descriptor) {
     auto& files = descriptor.at("files");
     auto projectiles = files.find("projectiles");
@@ -656,7 +662,7 @@ ModelPack ModelPack::loadImpl(std::filesystem::path const& source, bool roomInpu
         auto texture = readTexture(item, "");
         auto found = std::find_if(result.textures.begin(), result.textures.end(), [&](auto const& entry) { return entry.name == texture.name; });
         if (found == result.textures.end()) result.textures.push_back(std::move(texture));
-        else *found = std::move(texture); // Upstream's texture-name map keeps the last declaration.
+        else *found = std::move(texture);  
     }
     auto wanted = properties.value("default_texture", "");
     if (!wanted.empty() && !result.selectTexture(wanted))
@@ -760,8 +766,8 @@ ModelPack ModelPack::loadImpl(std::filesystem::path const& source, bool roomInpu
                 })
                 && controllers.empty();
             if (arrowEntry) {
-                // Some old manifests place an arrow-model definition in the
-                // vehicle map. Its projectile clips need the projectile stages.
+                 
+                 
                 target.kind = ReplacedModelKind::Projectile;
                 target.id = "projectile/" + std::to_string(11000 + i).substr(1);
                 result.warnings.push_back("Recovered projectile from vehicle model entry: " + target.matches.front());
@@ -846,8 +852,8 @@ ModelPack ModelPack::loadImpl(std::filesystem::path const& source, bool roomInpu
         if (!result.sounds.emplace(name, clip).second) throw std::runtime_error("Duplicate raw sound name: " + name);
     }
     result.localContentKey = input.localContentKey();
-    // Menu decoration is optional and has no bearing on existing animation
-    // state keys. Load it after core resources, using the same asset budget.
+     
+     
     auto readDecoration = [&](char const* key) -> std::shared_ptr<TextureImage const> {
         auto found = properties.find(key);
         if (found == properties.end() || !found->is_string() || blank(found->get_ref<std::string const&>())) return {};
@@ -857,11 +863,11 @@ ModelPack ModelPack::loadImpl(std::filesystem::path const& source, bool roomInpu
     };
     result.previewBackground = readDecoration("gui_background");
     result.previewForeground = readDecoration("gui_foreground");
-    // Presentation-only data is intentionally outside the animation/Roaming
-    // content identity. Missing translations do not invalidate an author pack.
+     
+     
     result.languages = readModelLanguages(input, result.descriptor, &result.warnings);
-    // Only models using per-bone surfaces need separate native surface passes.
-    // Inspect compiled calls, so a quoted name or comment cannot opt a model in.
+     
+     
     auto visualCalls = [&](auto&& self, Json const& value) -> void {
         if (result.boneTransparency) return;
         if (value.is_string()) {
@@ -869,7 +875,7 @@ ModelPack ModelPack::loadImpl(std::filesystem::path const& source, bool roomInpu
                 MolangProgram program(value.get<std::string>());
                 result.individualBoneMaterials |= program.hasBoneVisualActions();
                 result.boneTransparency = program.hasBoneTransparency();
-            } catch (std::exception const&) { /* The animation compiler reports invalid expressions. */ }
+            } catch (std::exception const&) {   }
         }
         if (value.is_structured()) for (auto const& item : value) self(self, item);
     };
@@ -884,7 +890,7 @@ ModelPack ModelPack::loadImpl(std::filesystem::path const& source, bool roomInpu
                 MolangProgram program(value.get<std::string>());
                 target.individualBoneMaterials |= program.hasBoneVisualActions();
                 target.boneTransparency |= program.hasBoneTransparency();
-            } catch (std::exception const&) { /* Reported by the target animation compiler. */ }
+            } catch (std::exception const&) {   }
             if (value.is_structured()) for (auto const& item : value) self(self, item);
         };
         for (auto const* value : {&target.animations, &target.controllers, &result.functions}) inspect(inspect, *value);
@@ -942,8 +948,8 @@ std::uint64_t ModelPack::hashRenderGeometry() const {
 }
 
 std::string ModelPack::renderKey() const {
-    // Geometry is immutable after loading. Texture changes only mix the
-    // selected pixels and material into the prepared cache identity.
+     
+     
     auto hash = geometryHash;
     for (unsigned char byte : currentTexture().uv->encoded) { hash ^= byte; hash *= 1099511628211ull; }
     if (currentTexture().normal || currentTexture().specular) {

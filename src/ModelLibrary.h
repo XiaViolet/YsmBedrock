@@ -70,6 +70,7 @@ public:
     void save() const;
     std::filesystem::path const& root() const { return directory; }
     std::string const& source() const { return selectedSource; }
+    Json const& catalogRows() const { return catalog; }
     Json report() const;
 };
 }

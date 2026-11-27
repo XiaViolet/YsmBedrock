@@ -1,56 +1,53 @@
-<h1 align="center">YsmBedrock</h1>
+# YsmBedrock — English localization
 
-<p align="center">
-  在 Minecraft 基岩版 Windows 客户端穿戴 YSM 模型、切换外观、播放自定义动作。
-</p>
+YsmBedrock is an unofficial Windows client port of [Yes Steve Model](https://github.com/YesSteveModel/YesSteveModel), maintained upstream by XiaViolet. It supports custom YSM models, textures, emotes, model settings, and approved room model synchronization.
 
-<p align="center">
-  <strong><a href="https://github.com/XiaViolet/YsmBedrock/releases/tag/v0.29.44">0.29.44 预览版</a></strong> · Windows x64 · Minecraft 1.26.60.05
-</p>
+This localized source is based on YsmBedrock 0.29.44. It uses the language selected in Minecraft: English and Chinese have built-in UI strings; other game languages use the English interface. Imported models use their author-provided language files first, with English and Chinese fallback entries. Common Chinese model labels are translated offline; emotes without known translations use readable animation IDs or numbered emote labels. Author names, animation IDs, MoLang expressions, radio indexes, texture file names and network identifiers are not rewritten. For arbitrary model text, the author-provided English translation is still required for exact wording.
 
-> [!IMPORTANT]
-> 导入模组前，请先在对应的游戏实例中安装 **LeviLamina 客户端版**。本版支持 26.60.7、26.60.8 或 [26.60.9](https://github.com/LiteLDev/LeviLamina/releases/tag/v26.60.9)。
+## Requirements
 
-<p align="center">
-  <a href="https://github.com/XiaViolet/YsmBedrock/releases/download/v0.29.44/YsmBedrock-0.29.44.mcmod"><strong>下载 LeviLauncher · .mcmod</strong></a>
-  &nbsp; · &nbsp;
-  <a href="https://github.com/XiaViolet/YsmBedrock/releases/download/v0.29.44/YsmBedrock-0.29.44-BedrockBoot.zip"><strong>下载 BedrockBoot · .zip</strong></a>
-</p>
+- Windows x64
+- Minecraft Bedrock 1.26.60.05
+- LeviLamina client 26.60.9 (upstream also lists 26.60.7 and 26.60.8)
+- Visual Studio 2022 Build Tools with Desktop development with C++, Windows SDK, LLVM/clang-cl, Git, and xmake for compiling
 
-![YsmBedrock 实机截图，樱木建筑前的角色与发光法杖](docs/images/gameplay.webp)
+## Build and package
 
-## 快速开始
+Open an x64 Native Tools Command Prompt for Visual Studio 2022 or Developer PowerShell in this directory. Make sure `clang-cl` and `xmake` are available on PATH.
 
-本版使用 LeviLamina 26.60.9 客户端构建。通过 lip 安装时会使用 26.60.9。
+```powershell
+xmake f -p windows -a x64 -m release -y
+xmake build -y YsmBedrock
+```
 
-先退出游戏，在启动器里选择对应的 Minecraft 实例，再导入上方对应的安装包。
+The expected DLL is `build/windows/x64/release/YsmBedrock.dll`. To build the inspector as well, run `xmake build -y ysm-inspect` or `powershell -ExecutionPolicy Bypass -File .\tools\build.ps1`.
 
-| 启动器 | 导入位置 |
-| --- | --- |
-| **LeviLauncher** | 模组管理 → LeviLamina → 导入模组，选择 `.mcmod` |
-| **BedrockBoot** | 模组管理 → LeviLamina → 导入模组，直接选择 `.zip` |
+Create the launcher archives using:
 
-进入游戏后，按 **`Alt+Y`** 打开模型库。可以试用内置的酒狐和魔法酒狐，也可以导入原始 ZIP、受支持的 `.ysm` 或模型文件夹。选好外观后点击「穿戴此模型」，按 **`Z`** 打开动作转盘。
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\package-localized.ps1
+```
 
-## 模型与联机
+For legacy v3 `.ysm` support and the original optional bundled models, supply the original upstream `.mcmod` (available on the upstream [0.29.44 release page](https://github.com/XiaViolet/YsmBedrock/releases/tag/v0.29.44)):
 
-- **模型库**支持预览模型、切换贴图、收藏与调整作者配置。
-- **动作转盘**用于播放模型自带的动作。
-- **好友房间**支持在房主允许后同步模型与外观。房主和参与同步的玩家请使用同一版 YsmBedrock。
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\package-localized.ps1 -BaseMod 'C:\Downloads\YsmBedrock-0.29.44.mcmod'
+```
 
-[功能手册](docs/项目功能手册.md) · [好友房间同步](docs/0.29.19-房间模型同步.md) · [服务器中继配置](docs/联机使用.md)
+The script uses the newly built YsmBedrock.dll, not the original main DLL. It can reuse the unchanged YsmLegacyV3.dll and checksum-verified model assets from the original package. Alternatively, the upstream `tools/build-legacy-v3.ps1` builds the optional reader with a separately prepared YesSteveModel-Native checkout and Conan dependencies. Neither the optional binary nor the bundled model archives is present in the supplied source ZIP.
 
-## 0.29.44 更新
+The output directory is `dist`. Import `YsmBedrock-0.29.44-localized.mcmod` in LeviLauncher or `YsmBedrock-0.29.44-localized-BedrockBoot.zip` in BedrockBoot. Remove or replace the original version rather than installing both at once. The launcher should be closed while replacing a loaded mod.
 
-修复 Arke 光影下第一人称低头时，快捷栏可见导致的角色地面投影闪烁。已在 Arke + Photon 1.4 环境复验。
+## Usage
 
-[本版更新与下载](https://github.com/XiaViolet/YsmBedrock/releases/tag/v0.29.44) · [投影复验记录](docs/0.29.44-Arke投影.md) · [历史版本](https://github.com/XiaViolet/YsmBedrock/releases)
+- Set Minecraft's language in Settings > Language.
+- Press Alt+Y in a world to open the model library.
+- Import a ZIP, supported YSM file, or model source folder, select the model and click Equip Model.
+- Press Z for the emote wheel.
+- For a model-specific English translation, add or update `lang/en_us.json` in that model (or the directory defined by `files.language_path`). The JSON uses keys such as `properties.extra_animation.extra0`, `properties.extra_animation.extra0.desc`, `metadata.name`, `files.player.texture.skin`, and `properties.extra_animation_buttons.appearance.config_forms.0.title`. Keep internal IDs and programs unchanged.
 
-遇到问题可以提交 [GitHub Issue](https://github.com/XiaViolet/YsmBedrock/issues)。请附上游戏、LeviLamina、模组版本和复现步骤。光影问题也请注明 Arke 和光影包版本。
+## Verification
 
-## 源码与署名
+The portable localization regression can be built with `xmake build ysm-localization-test` and run using `xmake run ysm-localization-test`. The Windows UI integration tests can be run after building `ysm-inspect` using `py -3 -m unittest discover -s tests -p test_ysm_ui.py -v`. Some upstream tests require private model fixtures that are not included in the source archive.
 
-YsmBedrock 是 [Yes Steve Model](https://github.com/YesSteveModel/YesSteveModel) 的非官方基岩版移植。基岩版移植代码主要由 **OpenAI Codex** 编写，由 **XiaViolet** 维护。
-
-- [源码](src/) · [回归测试](tests/) · [构建与维护](docs/维护框架.md) · [Java 功能对照](docs/Java功能对照.md)
-- [第三方声明](THIRD_PARTY_NOTICES.md) · [许可文件](licenses/) · [酒狐署名](licenses/wine-fox-source.json) · [魔法酒狐署名](licenses/magical-wine-fox-source.json)
+The original project documentation, third-party notices and license files are retained. Original release notes, source attribution and project resources: [upstream YsmBedrock](https://github.com/XiaViolet/YsmBedrock), [third-party notices](THIRD_PARTY_NOTICES.md), [licenses](licenses/), [feature guide](docs/项目功能手册.md), [maintenance guide](docs/维护框架.md). This localization is not an official upstream release.

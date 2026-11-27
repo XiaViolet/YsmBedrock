@@ -40,10 +40,10 @@ void loadModel(ResourcePackManager const& packs, Json& geometry, Pose& pose) {
 Json NativePortraitParrots::report() const {
     std::array<bool, 5> ready{};
     for (std::size_t i = 0; i < ready.size(); ++i) ready[i] = bool(textures[i]);
-    return {{"variants", current}, {"geometry", geometry.is_object()}, {"skin_ready", ready}};
+    return {{"variants", current}, {"geometry", bool(geometry)}, {"skin_ready", ready}};
 }
 
-PreviewShoulders NativePortraitParrots::get(IClientInstance& client, std::array<int, 2> variants) {
+NativePortraitParrots::Snapshot NativePortraitParrots::get(IClientInstance& client, std::array<int, 2> variants) {
     auto* player = client.getLocalPlayer();
     if (!player) return {};
     if (level != &player->getLevel()) {
@@ -55,14 +55,22 @@ PreviewShoulders NativePortraitParrots::get(IClientInstance& client, std::array<
     auto& packs = client.getResourcePackManager();
     auto now = Clock::now();
     constexpr auto retry = std::chrono::seconds(2);
-    if (!geometry.is_object() && now >= retryModel) {
+    if (!bool(geometry) && now >= retryModel) {
         retryModel = now + retry;
-        try { loadModel(packs, geometry, pose); }
+        try {
+            Json model;
+            Pose perched;
+            loadModel(packs, model, perched);
+            if (model.is_object()) {
+                pose = std::make_shared<Pose const>(std::move(perched));
+                geometry = std::make_shared<Json const>(std::move(model));
+            }
+        }
         catch (std::exception const&) { return {}; }
     }
-    if (!geometry.is_object()) return {};
+    if (!bool(geometry)) return {};
     constexpr std::array<char const*, 5> names{"red_blue", "blue", "green", "yellow_blue", "grey"};
-    PreviewShoulders result{&geometry, &pose};
+    Snapshot result{geometry, pose};
     for (std::size_t side = 0; side < variants.size(); ++side) {
         int variant = variants[side];
         if (variant < 0 || variant >= static_cast<int>(names.size())) continue;
@@ -77,7 +85,7 @@ PreviewShoulders NativePortraitParrots::get(IClientInstance& client, std::array<
                 }
             } catch (std::exception const&) { continue; }
         }
-        result.skins[side] = skin.get();
+        result.skins[side] = skin;
     }
     return result;
 }

@@ -14,8 +14,6 @@ add_requires("libwebp 1.6.0", {configs = {shared = false}})
 add_requires("libavif 1.4.2", {configs = {shared = false}})
 add_requires("libopusfile 0.12+20260328")
 
--- Both entry points use the same model, animation and UI logic. Only the
--- client target compiles Bedrock-specific hooks and resource bindings.
 local core_sources = {
     "src/ModelPack.cpp", "src/ModelLibrary.cpp", "src/ModelTargets.cpp",
     "src/ContentHash.cpp", "src/ImageCodec.cpp", "src/LegacyBundle.cpp",
@@ -56,3 +54,17 @@ target("ysm-menu-touch-test")
     set_kind("binary")
     configure_shared_sources()
     add_files("tests/windows_menu_touch.cpp")
+
+
+target("ysm-localization-test")
+    set_default(false)
+    set_kind("binary")
+    add_includedirs("src")
+    add_cxflags("/utf-8")
+    add_files("tests/localization_regression.cpp")
+
+target("ysm-preview-performance-test")
+    set_default(false)
+    set_kind("binary")
+    add_includedirs("src")
+    add_files("tests/preview_performance_regression.cpp")

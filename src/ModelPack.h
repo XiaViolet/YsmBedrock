@@ -15,7 +15,7 @@ namespace ysm {
 using Json = nlohmann::ordered_json;
 void validateGeometry(Json const& document, std::size_t& boneCount, std::size_t& cubeCount);
 std::string modelLocale(std::string locale);
-Json const& modelLanguage(Json const& languages, std::string_view locale);
+Json modelLanguage(Json const& languages, std::string_view locale);
 struct ModelTexture {
     std::string name;
     std::shared_ptr<TextureImage const> uv, normal, specular;

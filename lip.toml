@@ -4,7 +4,7 @@ version = "0.29.44"
 
 [info]
 name = "YsmBedrock"
-description = "Yes Steve Model 的非官方基岩版 Windows 移植，支持 YSM 模型、动画和房间模型同步。"
+description = "Unofficial Windows Bedrock port of Yes Steve Model, with custom models, emotes and room model synchronization."
 tags = ["utility"]
 
 [[variants.""]]

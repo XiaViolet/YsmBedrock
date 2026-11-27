@@ -89,4 +89,16 @@ std::shared_ptr<NativeTextureUpload> NativeTextureUpload::create(std::shared_ptr
     return result;
 }
 NativeTextureSet NativeTextureUpload::textures() const { return impl->textures; }
+bool NativeTextureUpload::updateColor(TextureImage const& source) {
+    auto group = impl->group.lock();
+    auto const& color = impl->textures.color;
+    if (!group || !color || impl->locations.size() != 1 || impl->textures.normal || impl->textures.material ||
+        color->mTextureDescription->mWidth != source.width || color->mTextureDescription->mHeight != source.height ||
+        !source.width || !source.height || source.rgba.size() != std::size_t(source.width) * source.height * 4) return false;
+    mce::Image image(source.width, source.height, 1, mce::ImageFormat::RGBA8Unorm, mce::ImageUsage::SRGB);
+    image.mAlphaUsage = mce::AlphaUsage::Transparent;
+    image.resizeImageBytesToFitImageDescription();
+    std::memcpy(image.mImageBytes.data(), source.rgba.data(), source.rgba.size());
+    return group->updateTextureInPlace(*impl->locations.front(), cg::ImageBuffer(std::move(image)));
+}
 }

@@ -159,10 +159,10 @@ struct PreviewDepthRenderer::Impl {
         UINT bytes = static_cast<UINT>(data.size_bytes());
         if (bytes > capacity) {
             D3D11_BUFFER_DESC desc{};
-            desc.ByteWidth = bytes; desc.Usage = D3D11_USAGE_DYNAMIC; desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+            desc.ByteWidth = static_cast<UINT>(std::min<std::uint64_t>(std::numeric_limits<UINT>::max(), std::max<std::uint64_t>(bytes, std::uint64_t(capacity) + capacity / 2 + 4096))); desc.Usage = D3D11_USAGE_DYNAMIC; desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
             desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
             check(device->CreateBuffer(&desc, nullptr, vertices.ReleaseAndGetAddressOf()), "vertex buffer");
-            capacity = bytes;
+            capacity = desc.ByteWidth;
         }
         D3D11_MAPPED_SUBRESOURCE mapped{};
         check(ctx->Map(vertices.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped), "vertex upload");
