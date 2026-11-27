@@ -2,6 +2,7 @@
 #include "ModelPack.h"
 #include "ModelPreview.h"
 #include "Molang.h"
+#include "UiIcons.h"
 #include <cstdint>
 #include <deque>
 
@@ -32,7 +33,7 @@ struct UiRect {
     float x = 0, y = 0, w = 0, h = 0;
     bool contains(float px, float py) const { return px >= x && py >= y && px < x+w && py < y+h; }
 };
-struct UiPaint { UiRect rect; std::uint32_t color; std::string text; float scale = 1; bool centered = false; float radius = 0; int wheelSector = -1; bool line = false; float endX = 0, endY = 0; bool rawColor = false; };
+struct UiPaint { UiRect rect; std::uint32_t color; std::string text; float scale = 1; bool centered = false; float radius = 0; int wheelSector = -1; bool line = false; float endX = 0, endY = 0; bool rawColor = false; UiIcon icon = UiIcon::None; bool isAtlasItem() const { return !text.empty() || icon != UiIcon::None; } };
 struct UiCommand { std::string kind, key; double value = 0; int label = -1; std::uint64_t generation = 0; };
 struct LibraryPreview {
     std::string source, name, animation;

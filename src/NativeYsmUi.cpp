@@ -523,7 +523,7 @@ void NativeYsmUi::render(MinecraftUIRenderContext& context, AnimationRuntime con
     auto textPaint=std::span<UiPaint const>(scene.paint).first(split);
     auto textKey=(sceneChanged || impl->lastTextDensity!=impl->textDensity || !impl->textTexture) ? uiTextKey(textPaint,impl->textDensity) : impl->textKey;
     impl->lastTextDensity=impl->textDensity;
-    bool hasText = std::any_of(textPaint.begin(), textPaint.end(), [](auto const& paint){ return !paint.text.empty(); });
+    bool hasText = std::any_of(textPaint.begin(), textPaint.end(), [](auto const& paint){ return paint.isAtlasItem(); });
     if(hasText && (textKey!=impl->textKey||!impl->textTexture||impl->textGroup.lock()!=client.getTextureGroup())) {
         auto atlas=rasterizeUiText(textPaint,impl->textDensity,&impl->textMasks);auto group=client.getTextureGroup();
         if(group) {

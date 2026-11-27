@@ -61,25 +61,11 @@ struct Painter {
     }
     void circle(float x,float y,float r,std::uint32_t color){box({x-r,y-r,r*2,r*2},color,r);}
     void icon(std::string const& id,float x,float y,float size,std::uint32_t color){
-        auto l=[&](float a,float b,float c,float d){line(x+a*size,y+b*size,x+c*size,y+d*size,color,std::max(1.f,size*.075f));};
-        if(id=="close"){l(.25f,.25f,.75f,.75f);l(.75f,.25f,.25f,.75f);}
-        else if(id=="check"){l(.17f,.52f,.40f,.75f);l(.40f,.75f,.84f,.24f);}
-        else if(id=="prev"||id=="next"){auto s=id=="prev"?1.f:-1.f;float c=.5f;l(c+s*.15f,.2f,c-s*.15f,.5f);l(c-s*.15f,.5f,c+s*.15f,.8f);}
-        else if(id=="search"){border({x+.12f*size,y+.1f*size,size*.57f,size*.57f},color,white,size*.3f,1.5f);l(.61f,.61f,.87f,.87f);}
-        else if(id=="model"){l(.5f,.07f,.9f,.3f);l(.9f,.3f,.9f,.73f);l(.9f,.73f,.5f,.96f);l(.5f,.96f,.1f,.73f);l(.1f,.73f,.1f,.3f);l(.1f,.3f,.5f,.07f);l(.1f,.3f,.5f,.54f);l(.5f,.54f,.9f,.3f);l(.5f,.54f,.5f,.96f);}
-        else if(id=="texture"){for(int a=0;a<2;++a)for(int b=0;b<2;++b)border({x+size*(.1f+a*.48f),y+size*(.1f+b*.48f),size*.32f,size*.32f},color,color,1,0);}
-        else if(id=="play"){l(.28f,.12f,.86f,.5f);l(.86f,.5f,.28f,.88f);l(.28f,.88f,.28f,.12f);}
-        else if(id=="wheel"||id=="settings"||id=="info"){
-            border({x+.08f*size,y+.08f*size,size*.84f,size*.84f},color,paper,size*.42f,1.4f);
-            if(id=="info"){circle(x+.5f*size,y+.32f*size,size*.045f,color);l(.5f,.46f,.5f,.73f);}
-            else if(id=="settings"){border({x+.35f*size,y+.35f*size,size*.3f,size*.3f},color,paper,size*.15f,1.2f);for(int i=0;i<4;++i){auto a=i*1.5707963f;l(.5f+std::cos(a)*.32f,.5f+std::sin(a)*.32f,.5f+std::cos(a)*.50f,.5f+std::sin(a)*.50f);}}
-            else for(int i=0;i<8;++i){auto a=i*.78539816f;l(.5f+std::cos(a)*.18f,.5f+std::sin(a)*.18f,.5f+std::cos(a)*.39f,.5f+std::sin(a)*.39f);}
-        } else if(id=="star") {
-            float lastX=.5f,lastY=.06f;for(int i=1;i<=10;++i){float a=-1.5707963f+i*.6283185f,r=i%2?.19f:.44f;float nx=.5f+std::cos(a)*r,ny=.5f+std::sin(a)*r;l(lastX,lastY,nx,ny);lastX=nx;lastY=ny;}
-        } else if(id=="reload"){l(.8f,.28f,.66f,.13f);l(.66f,.13f,.3f,.13f);l(.3f,.13f,.12f,.36f);l(.12f,.36f,.12f,.7f);l(.12f,.7f,.36f,.88f);l(.36f,.88f,.72f,.85f);l(.72f,.85f,.88f,.66f);l(.8f,.1f,.8f,.35f);l(.8f,.35f,.55f,.35f);}
-        else if(id=="stop")box({x+size*.23f,y+size*.23f,size*.54f,size*.54f},color,2);
-        else if(id=="minus")l(.2f,.5f,.8f,.5f);
-        else if(id=="plus"){l(.2f,.5f,.8f,.5f);l(.5f,.2f,.5f,.8f);}
+        auto kind=uiIcon(id);
+        if(kind==UiIcon::None||size<=0)return;
+        UiPaint paint{{x,y,size,size},color,{}};
+        paint.icon=kind;
+        scene.paint.push_back(std::move(paint));
     }
 };
 }
@@ -123,13 +109,14 @@ UiScene YsmUi::buildScene(float width,float height, float hotbarTop) {
         bool hover=r.contains(mx,my);auto fill=primary?teal:active?wash:hover?0xffeaf0e7:white;
         focus(r,id);p.border(r,active?0xffa9cdbc:edge,fill,6,primary?0.f:1.f);
         auto color=primary?onAccent:active?teal:ink;
-        if(!icon.empty())p.icon(icon,r.x+10,r.y+(r.h-14)/2,14,color);
+        if(!icon.empty())p.icon(icon,r.x+9,r.y+(r.h-18)/2,18,color);
         p.text(r.x+(icon.empty()?10:32),r.y+(r.h-13)/2,r.w-(icon.empty()?20:42),label,color,.95f);
         hit(r,std::move(id));
     };
     auto iconButton=[&](UiRect r,std::string icon,std::string id,bool active=false) {
         bool hover=r.contains(mx,my);focus(r,id,r.h/2);p.border(r,active?0xffbdd8c9:hover?0xffc8d7c9:edge,active?wash:white,r.h/2);
-        p.icon(icon,r.x+(r.w-14)/2,r.y+(r.h-14)/2,14,active?teal:muted);hit(r,std::move(id));
+        auto size=std::clamp(std::min(r.w,r.h)-8.f,12.f,20.f);
+        p.icon(icon,r.x+(r.w-size)/2,r.y+(r.h-size)/2,size,active?teal:ink);hit(r,std::move(id));
     };
     auto toggle=[&](UiRect r,std::string id,bool on,std::optional<UiRect> row={}) {
         focus(r,id,r.h/2);p.box(r,on?teal:0xffd8e0d5,r.h/2);p.circle(r.x+(on?r.w-r.h/2:r.h/2),r.y+r.h/2,r.h/2-3,on?onAccent:white);hit(row.value_or(r),std::move(id));
@@ -171,7 +158,10 @@ UiScene YsmUi::buildScene(float width,float height, float hotbarTop) {
             auto hovered=r.contains(mx,my);
             focus(r,id);
             p.border(r,active ? 0xff90cbb8 : edge,active ? wash : hovered ? soft : white,7);
-            p.text(r.x+3,r.y+(r.h-14)/2,r.w-6,label,active ? teal : ink,1,true);
+            if(label=="−"||label=="+"||label=="‹"||label=="›") {
+                auto size=std::min(18.f,r.h-4.f);
+                p.icon(label=="−"?"minus":label=="+"?"plus":label=="‹"?"prev":"next",r.x+(r.w-size)/2,r.y+(r.h-size)/2,size,active?teal:ink);
+            } else p.text(r.x+3,r.y+(r.h-14)/2,r.w-6,label,active ? teal : ink,1,true);
             hit(r,std::move(id));
         };
          
@@ -315,11 +305,11 @@ UiScene YsmUi::buildScene(float width,float height, float hotbarTop) {
     } else {
         p.box({2,7,W,H},0x58000000,16);p.box({0,0,W,H},paper,14);
         p.box({0,0,143,H},0xfff0f3eb,14);p.box({132,0,11,H},0xfff0f3eb);p.box({143,0,1,H},edge);
-        p.box({20,25,29,29},teal,8);p.icon("model",26,31,17,onAccent);p.text(59,29,70,"YSM",ink,1.75f);p.text(22,67,100,tr("模型工坊", "Model Workshop"),muted,.9f);
+        p.box({20,25,29,29},teal,8);p.icon("model",25,30,19,onAccent);p.text(59,29,70,"YSM",ink,1.75f);p.text(22,67,100,tr("模型工坊", "Model Workshop"),muted,.9f);
         float navY=112;
         auto nav=[&](std::string label,std::string id,std::string icon,Page target) {
             UiRect r{12,navY,119,37};bool active=page==target||(target==Page::Settings&&page==Page::Appearance),hover=r.contains(mx,my);focus(r,id);if(active||hover)p.box(r,active?wash:0xffe7eddf,7);
-            if(active)p.box({12,navY+10,3,17},teal,1.5f);p.icon(icon,25,navY+10,17,active?teal:muted);p.text(52,navY+11,76,label,active?teal:ink,1);
+            if(active)p.box({12,navY+10,3,17},teal,1.5f);p.icon(icon,24,navY+9,19,active?teal:muted);p.text(52,navY+11,76,label,active?teal:ink,1);
             hit(r,std::move(id));navY+=45;
         };
         nav(tr("模型库", "Models"),"models","model",Page::Models);nav(tr("贴图", "Textures"),"textures","texture",Page::Textures);nav(tr("动作预览", "Preview"),"preview","play",Page::Preview);nav(tr("动作转盘", "Emotes"),"roulette","wheel",Page::Roulette);nav(tr("模型信息", "Model Info"),"info","info",Page::Info);nav(tr("本地设置", "Settings"),"settings","settings",Page::Settings);
@@ -357,7 +347,7 @@ UiScene YsmUi::buildScene(float width,float height, float hotbarTop) {
         };
         if(page==Page::Models) {
             constexpr float listW=453;
-            UiRect searchRect{cx,top,277,32};focus(searchRect,"search");p.border(searchRect,searchFocused?0xff93bfaa:edge,white,7);p.icon("search",cx+11,top+9,14,muted);
+            UiRect searchRect{cx,top,277,32};focus(searchRect,"search");p.border(searchRect,searchFocused?0xff93bfaa:edge,white,7);p.icon("search",cx+9,top+7,18,muted);
             p.text(cx+33,top+12,232,fit(search.empty()?tr("搜索名称（可粘贴中文）", "Search models"):search,232,.9f),search.empty()?muted:ink,.9f);hit(searchRect,"search");
             button({cx+288,top,105,32},favoritesOnly?tr("已收藏", "Favorites"):tr("全部模型", "All Models"),"favorite_filter",favoritesOnly,false,"star");iconButton({cx+409,top,34,32},"reload","reload");
             struct Card { Json const* row; std::string name, author; };
@@ -405,7 +395,7 @@ UiScene YsmUi::buildScene(float width,float height, float hotbarTop) {
             modelStage({cx,top,292,378});float lx=485,lw=411;
             p.text(lx,top+4,lw,tr("可用贴图", "Available Textures"),ink,1.1f);p.text(lx,top+27,lw,tr("选择后应用到当前模型", "Select to apply to the current model"),muted,.85f);
             constexpr std::size_t rows=5;auto pages=std::max<std::size_t>(1,(data.textures.size()+rows-1)/rows);texturePage%=pages;
-            for(std::size_t n=0;n<rows&&texturePage*rows+n<data.textures.size();++n){auto const& t=data.textures[texturePage*rows+n];UiRect r{lx,top+57+n*51,lw,43};button(r,local("files.player.texture."+t,t),"texture:"+t,t==data.texture,false,"texture");if(t==data.texture)p.icon("check",r.x+r.w-30,r.y+14,14,teal);}
+            for(std::size_t n=0;n<rows&&texturePage*rows+n<data.textures.size();++n){auto const& t=data.textures[texturePage*rows+n];UiRect r{lx,top+57+n*51,lw,43};button(r,local("files.player.texture."+t,t),"texture:"+t,t==data.texture,false,"texture");if(t==data.texture)p.icon("check",r.x+r.w-31,r.y+12,18,teal);}
             pager(texturePage,pages,lx+102,439,207);
         } else if(page==Page::Preview) {
             scene.animatePreview=true;

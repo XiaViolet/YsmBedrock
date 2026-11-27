@@ -30,7 +30,7 @@ struct Label {UiRect source;std::vector<unsigned char> rgba;int width,height,x=0
 std::uint64_t uiTextKey(std::span<UiPaint const> paint,float density) {
     std::uint64_t hash=1469598103934665603ull;auto byte=[&](unsigned char v){hash^=v;hash*=1099511628211ull;};
     auto word=[&](std::uint32_t v){for(int i=0;i<4;++i)byte(static_cast<unsigned char>(v>>(i*8)));};word(std::bit_cast<std::uint32_t>(density));
-    for(auto const& p:paint)if(!p.text.empty()) {for(auto c:p.text)byte(static_cast<unsigned char>(c));byte(0);word(p.color);
+    for(auto const& p:paint)if(p.isAtlasItem()) {byte(static_cast<unsigned char>(p.icon));for(auto c:p.text)byte(static_cast<unsigned char>(c));byte(0);word(p.color);
         for(float f:{p.rect.x,p.rect.y,p.rect.w,p.rect.h,p.scale})word(std::bit_cast<std::uint32_t>(f));byte(p.centered);}
     return hash;
 }
@@ -38,17 +38,21 @@ UiTextAtlas rasterizeUiText(std::span<UiPaint const> paint,float density,UiTextM
     UiTextAtlas result;result.pixelDensity=std::clamp(density,.5f,12.f);density=result.pixelDensity;
     FontContext fonts;std::vector<Label> labels;constexpr int atlasWidth=2048,atlasLimit=4096;
     for(auto const& p:paint) {
-        if(p.text.empty()||p.rect.w<=0||!(p.color>>24))continue;
+        if(!p.isAtlasItem()||p.rect.w<=0||p.rect.h<=0||!(p.color>>24))continue;
         if(labels.size()>=512)throw std::runtime_error("UI text label budget exceeded");
         int pixels=std::clamp(static_cast<int>(std::round(p.scale*11*density)),8,128);
         int style=(hasHan(p.text)?1:0)|(p.scale*10*density>=24?2:0);
         int maxWidth=std::clamp(static_cast<int>(std::ceil(p.rect.w*density)),1,atlasWidth-4);
         int height=std::clamp(static_cast<int>(std::ceil(p.rect.h*density)),pixels+4,256);
-        UiTextMaskCache::Key key{p.text,pixels,maxWidth,height,style};
+        bool icon=p.icon!=UiIcon::None;
+        if(icon){pixels=uiIconPixels(std::min(p.rect.w,p.rect.h),density);maxWidth=height=pixels;style=-1;}
+        UiTextMaskCache::Key key{icon?std::string(uiIconNames[static_cast<std::size_t>(p.icon)]):p.text,pixels,maxWidth,height,style};
         UiTextMaskCache::Mask local;
         UiTextMaskCache::Mask const* mask = nullptr;
         if(cache) if(auto found=cache->masks.find(key);found!=cache->masks.end()) mask=&found->second;
         if(!mask) {
+            if(icon){local.width=local.height=pixels;local.alpha=rasterizeUiIcon(p.icon,pixels);}
+            else {
             auto text=wide(p.text);if(text.empty())continue;
             fonts.font(pixels,style);
             SIZE extent{};if(!GetTextExtentPoint32W(fonts.dc,text.data(),static_cast<int>(text.size()),&extent))continue;
@@ -66,9 +70,10 @@ UiTextAtlas rasterizeUiText(std::span<UiPaint const> paint,float density,UiTextM
             local.width=width;local.height=height;local.alpha.resize(static_cast<std::size_t>(width)*height);
             auto* source=static_cast<unsigned char const*>(bits);
             for(std::size_t i=0;i<local.alpha.size();++i) local.alpha[i]=std::max({source[i*4],source[i*4+1],source[i*4+2]});
+            }
             constexpr std::size_t maxCacheBytes=16*1024*1024;
-            if(cache && local.alpha.size()+p.text.size()<=maxCacheBytes) {
-                auto bytes=local.alpha.size()+p.text.size();
+            if(cache && local.alpha.size()+std::get<0>(key).size()<=maxCacheBytes) {
+                auto bytes=local.alpha.size()+std::get<0>(key).size();
                 if(cache->masks.size()>=1024 || cache->bytes+bytes>maxCacheBytes) cache->clear();
                 auto [entry,inserted]=cache->masks.emplace(std::move(key),std::move(local));
                 if(inserted)cache->bytes+=bytes;
@@ -77,7 +82,8 @@ UiTextAtlas rasterizeUiText(std::span<UiPaint const> paint,float density,UiTextM
         }
         Label label;label.width=mask->width;label.height=mask->height;
         label.source={p.rect.x,p.rect.y,mask->width/density,mask->height/density};
-        if(p.centered)label.source.x+=(p.rect.w-label.source.w)/2;
+        if(p.centered||icon)label.source.x+=(p.rect.w-label.source.w)/2;
+        if(icon)label.source.y+=(p.rect.h-label.source.h)/2;
         label.source.x=std::round(label.source.x*density)/density;
         label.source.y=std::round(label.source.y*density)/density;
         label.rgba.resize(mask->alpha.size()*4);

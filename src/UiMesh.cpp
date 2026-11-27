@@ -11,7 +11,7 @@ std::size_t uiMeshBatches(std::size_t vertices){return (vertices+uiBatchVertices
 std::uint64_t uiShapeKey(std::span<UiPaint const> paint) {
     std::uint64_t hash=1469598103934665603ull;
     auto mix=[&](std::uint32_t n){hash^=n;hash*=1099511628211ull;};
-    for(auto const& item:paint) if(item.text.empty()) {
+    for(auto const& item:paint) if(!item.isAtlasItem()) {
         mix(item.color);mix(static_cast<std::uint32_t>(item.wheelSector));mix(item.line);
         for(float v:{item.rect.x,item.rect.y,item.rect.w,item.rect.h,item.radius,item.endX,item.endY}) mix(std::bit_cast<std::uint32_t>(v));
     }
@@ -22,7 +22,7 @@ std::vector<UiVertex> buildUiMesh(std::span<UiPaint const> paint) {
     auto triangle=[&](UiVertex a,UiVertex b,UiVertex c){vertices.push_back(a);vertices.push_back(b);vertices.push_back(c);};
     for(auto const& item:paint) {
         auto const& r=item.rect;auto color=item.color;
-        if(!item.text.empty()||!(color>>24)||r.w<=0||r.h<=0)continue;
+        if(item.isAtlasItem()||!(color>>24)||r.w<=0||r.h<=0)continue;
         if(!std::isfinite(r.x)||!std::isfinite(r.y)||!std::isfinite(r.w)||!std::isfinite(r.h)||!std::isfinite(item.radius))continue;
         float radius=std::clamp(item.radius,0.f,std::min(r.w,r.h)*.5f);
         if (item.line) {
