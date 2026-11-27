@@ -112,19 +112,20 @@ void EntityQueries::bind(MolangContext& context, EntityQueryInput const& input) 
     for (auto& axis : position) axis = finite(axis, "position");
     context.entityPosition = position;
     if (input.renderPosition && !input.renderingInInventory) {
-        if (!previousRenderPosition || renderTick < positionTick) {
+        auto sampleTick = finite(input.positionSampleTicks.value_or(renderTick), "position_sample_ticks");
+        if (!previousRenderPosition || sampleTick < positionTick) {
             renderDelta = {};
             positionTickDelta = 0;
-        } else if (renderTick > positionTick) {
+        } else if (sampleTick > positionTick) {
             for (std::size_t axis = 0; axis < renderDelta.size(); ++axis)
                 renderDelta[axis] = finite(position[axis] - (*previousRenderPosition)[axis], "render_position_delta");
-            positionTickDelta = finite(renderTick - positionTick, "render_tick_delta");
+            positionTickDelta = finite(sampleTick - positionTick, "render_tick_delta");
         }
         // Repeated passes at the same owner time observe the current position
         // but keep the delta and baseline from the accepted logical update.
-        if (!previousRenderPosition || renderTick != positionTick) {
+        if (!previousRenderPosition || sampleTick != positionTick) {
             previousRenderPosition = position;
-            positionTick = renderTick;
+            positionTick = sampleTick;
         }
     }
     context.positionDelta = input.renderPosition ? renderDelta : std::array{x, y, z};

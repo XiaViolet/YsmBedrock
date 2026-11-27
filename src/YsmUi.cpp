@@ -182,6 +182,15 @@ std::vector<YsmUi::WheelEntry> YsmUi::wheelEntries() const {
         result.push_back({key,localizedEmote(data.descriptor,data.language,data.locale,key,std::move(text)),local(translationKey+".desc",{}),form});
     }return result;
 }
+void YsmUi::editWheel(std::size_t slot) {
+    auto entries = wheelEntries();
+    auto index = categories.back().second * 8 + slot;
+    if (index >= entries.size() || entries[index].form.empty()) return;
+    auto const& entry = entries[index];
+    activate("form:" + entry.form);
+    if (!entry.key.starts_with('#') && std::find(data.clips.begin(), data.clips.end(), entry.key) != data.clips.end())
+        formAction = entry.key;
+}
 void YsmUi::chooseWheel(std::size_t slot) {
     auto entries=wheelEntries();auto index=categories.back().second*8+slot;if(index>=entries.size())return;
     auto const& e=entries[index];
@@ -251,7 +260,13 @@ void YsmUi::activate(std::string const& id) {
     if(id.starts_with("room:")){command("room",id.substr(5));return;}
     if(id.starts_with("peer:")){command("peer_visibility",id.substr(5));return;}
     if(id.starts_with("clip:")){previewClip=id.substr(5);return;}
-    if(id.starts_with("form:")){formButton=id.substr(5);formPage=radioPage=0;page=Page::Forms;focusId.clear();hits.clear();ranges.clear();return;}
+    if (id.starts_with("edit_wheel:")) { editWheel(std::stoul(id.substr(11))); return; }
+    if (id == "play_form" && page == Page::Forms && !formAction.empty()) {
+        command("extra", formAction);
+        close();
+        return;
+    }
+    if(id.starts_with("form:")){formAction.clear();formButton=id.substr(5);formPage=radioPage=0;page=Page::Forms;focusId.clear();hits.clear();ranges.clear();return;}
     if(id.starts_with("wheel:")){chooseWheel(std::stoul(id.substr(6)));return;}
     if(id.starts_with("setting:")) {auto key=id.substr(8);auto value=!data.settings.value(key,false);data.settings[key]=value;command("setting",key,value);return;}
     if(id=="radio_prev"||id=="radio_next"){if(id=="radio_next")++radioPage;else if(radioPage)--radioPage;return;}
@@ -350,6 +365,10 @@ bool YsmUi::mouse(int button,int value,float x,float y) {
             searchFocused = false;
             return true;
         }
+    }
+    if (button == 2 && value && isWheel() && wheelHovered >= 0) {
+        editWheel(static_cast<std::size_t>(wheelHovered));
+        return true;
     }
     if(button==4&&value){
         if(isWheel() && wheelBounds.contains(x,y)) activate(value>0?"wheel_prev":"wheel_next");

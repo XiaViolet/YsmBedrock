@@ -161,6 +161,9 @@ class UiTests(unittest.TestCase):
         wheel=[dict(op='open',wheel=True)]
         form=self.click(wheel,'设置',**data)
         change=self.click(form,'已关闭',**data)
+        played=self.session(self.click(change,'执行此动作',**data),**data)[-1]
+        self.assertFalse(played['open'])
+        self.assertEqual([(c['kind'], c['key']) for c in played['commands']], [('extra','both')])
         frames=self.session(change+[dict(op='key',key=50)],**data)
         for frame in frames[:-1]:
             self.assertTrue(frame['live_player_preview'] and frame['open'])
@@ -198,8 +201,12 @@ class UiTests(unittest.TestCase):
                    and p['x']>hint['x'] and abs(p['y']-hint['y'])<12)
         for fraction,rate in ((0,5),(10/55,15),(25/55,30),(.999,60)):
             clicked=dict(op='mouse',button=1,value=1,x=track['x']+fraction*track['w'],y=track['y']+1)
-            self.assertEqual(self.session(settings+[clicked],**data)[-1]['commands'][0],
-                             dict(kind='setting',key='hud_fps',value=rate,label=-1,generation=1))
+            # Start below the maximum when checking the transition back to 60.
+            steps = list(settings)
+            if rate == 60:
+                steps.extend([clicked | {'x':track['x']}, clicked | {'x':track['x'],'value':0}])
+            self.assertEqual(self.session(steps+[clicked],**data)[-1]['commands'],
+                             [dict(kind='setting',key='hud_fps',value=rate,label=-1,generation=1)])
 
     def test_portrait_cadence_60_fps_and_no_catchup_burst(self):
         for game_rate in (60,120,144):

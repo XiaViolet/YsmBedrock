@@ -194,6 +194,7 @@ static ysm::EntityQueryInput entityInput(ysm::Json const& source) {
     result.worldTime = source.value("world_time", 0.0);
     result.tick = source.value("tick", std::int64_t{});
     result.uuidLeast = source.value("uuid_least", std::int64_t{});
+    if (source.contains("position_sample_ticks")) result.positionSampleTicks = source.at("position_sample_ticks").get<double>();
     result.renderTicks = source.value("render_ticks", static_cast<double>(result.tick) + source.value("partial_tick", 0.0));
     result.rainLevel = source.value("rain_level", 0.0);
     result.thunderLevel = source.value("thunder_level", 0.0);

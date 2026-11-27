@@ -199,7 +199,7 @@ UiScene YsmUi::buildScene(float width,float height, float hotbarTop) {
                 p.text(x-46,top+n*13,92,n==1&&lines.size()>2?fit(lines[n]+"…",91,1.03f):lines[n],highlighted ? teal : ink,1.03f,true);
             p.text(cx+dx*(radius*.86f)-16,cy+dy*(radius*.86f)-4,32,std::to_string(i+1),highlighted ? teal : muted,.78f,true);
             if (!e->form.empty() && (e->key.starts_with('#') || std::find(data.clips.begin(),data.clips.end(),e->key)!=data.clips.end()))
-                control({cx+dx*(radius*.42f)-17,cy+dy*(radius*.42f)-9,34,18},tr("设置", "Edit"),"form:"+e->form,editing);
+                control({cx+dx*(radius*.42f)-17,cy+dy*(radius*.42f)-9,34,18},tr("设置", "Edit"),"edit_wheel:"+std::to_string(i),editing);
         }
         p.circle(cx,cy,42,paper);
         p.icon("wheel",cx-12,cy-27,24,teal);
@@ -291,6 +291,8 @@ UiScene YsmUi::buildScene(float width,float height, float hotbarTop) {
             if(wheelHovered>=0 && wheelPage*8+wheelHovered<entries.size()) {
                 auto const& e=entries[wheelPage*8+wheelHovered];
                 heading=e.label;detail=e.description;
+                if (detail.empty() && !e.form.empty() && std::find(data.clips.begin(),data.clips.end(),e.key)!=data.clips.end())
+                    detail=tr("点击播放；点设置或右键调整后播放。", "Click to play. Use Edit or right-click to configure and play.");
                 if(detail.empty()) detail=e.key=="#return" ? tr("返回上一级", "Return to parent group") : e.key.starts_with('#') ? tr("打开分组", "Open group")
                     : !e.form.empty() ? tr("在右侧调整装饰", "Adjust accessories on the right") : tr("播放动作并关闭转盘", "Play emote and close wheel");
             }
@@ -300,7 +302,10 @@ UiScene YsmUi::buildScene(float width,float height, float hotbarTop) {
         }
         float actionY=cardBottom-38;
         button({sx,actionY,151,32},tr("停止当前动作", "Stop Emote"),"stop",false,false,"stop");
-        button({sx+157,actionY,156,32},tr("动作预览", "Emote Preview"),"preview",false,true,"play");
+        if (page == Page::Forms && !formAction.empty())
+            button({sx+157,actionY,156,32},tr("执行此动作", "Play this emote"),"play_form",true,true,"play");
+        else
+            button({sx+157,actionY,156,32},tr("动作预览", "Emote Preview"),"preview",false,true,"play");
         iconButton({W-28,3,28,28},"close","close");
     } else {
         p.box({2,7,W,H},0x58000000,16);p.box({0,0,W,H},paper,14);

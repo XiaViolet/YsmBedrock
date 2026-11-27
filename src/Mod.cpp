@@ -1560,11 +1560,12 @@ LL_TYPE_INSTANCE_HOOK(UiContextDestroyHook, ll::memory::HookPriority::Normal, Mi
 }
 LL_TYPE_INSTANCE_HOOK(SetupAttachableHook, ll::memory::HookPriority::Normal, DataDrivenModel,
     &DataDrivenModel::setupAttachable, void, ItemStack const& item, AttachableSlotIndex const& slot, RenderParams& params, Actor& actor) {
-    HeldItemBoneScope items(params);
-     
-     
+    auto mask = Mod::getInstance().handDrawMask(actor, slot, params.mActorRenderData && params.mActorRenderData->mIsInUI);
+    auto copy = defaultAttachableGrip(actor, slot, mask);
+    auto hand = slot == AttachableSlotIndex::OffhandItem ? "leftitem" : "rightitem";
+    HeldItemBoneScope items(params, hand, copy);
     origin(item, slot, params, actor);
-    bindAttachableParent(params, slot, item, actor);
+    bindAttachableParent(params, slot, item, actor, copy);
 }
 LL_TYPE_INSTANCE_HOOK(RenderAttachableNoChecksHook, ll::memory::HookPriority::Normal, DataDrivenModel,
     &DataDrivenModel::renderAttachableNoChecks, void, ItemStack const& item, AttachableSlotIndex const& slot, RenderParams& params, Actor& actor) {
@@ -1582,7 +1583,7 @@ LL_TYPE_INSTANCE_HOOK(RenderAttachableNoChecksHook, ll::memory::HookPriority::No
         HeldItemBoneScope copyPose(params, hand, copy);
         if (copyPose.bound()) drawGrip(copy);
     }
-    if (mask > 1 || ysmCharge) bindAttachableParent(params, slot, item, actor);
+    if (mask > 1 || ysmCharge) bindAttachableParent(params, slot, item, actor, defaultAttachableGrip(actor, slot, mask));
 }
 LL_TYPE_INSTANCE_HOOK(BoneVisualMeshHook, ll::memory::HookPriority::Normal, SkinnedMesh,
     &SkinnedMesh::draw, void, ScreenContext& screen, dragon::RenderMetadata const& metadata,

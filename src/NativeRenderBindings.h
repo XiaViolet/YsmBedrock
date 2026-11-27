@@ -26,7 +26,9 @@ public:
     static void leave(void const* context);
     static bool isActive();
 };
-void bindAttachableParent(RenderParams& params, AttachableSlotIndex slot, ItemStack const& item, Actor const& actor);
+unsigned defaultAttachableGrip(Actor const& actor, AttachableSlotIndex slot, unsigned mask);
+void bindAttachableParent(RenderParams& params, AttachableSlotIndex slot, ItemStack const& item, Actor const& actor,
+    unsigned primaryCopy = 0);
 void drawAtAttachableGrip(RenderParams& params, AttachableSlotIndex slot, ItemStack const& item, Actor const& actor,
     unsigned copy, bool lanceCharge, std::function<void()> const& draw);
 class HeldItemBoneScope {

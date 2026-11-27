@@ -21,6 +21,15 @@ class EntityQueryTests(unittest.TestCase):
         self.assertEqual(report['diagnostics'], [], report)
         return report['values']
 
+    def test_flight_velocity_uses_the_clock_that_interpolated_the_position(self):
+        # A repeated shadow pass and uneven presentation times during vertical flight.
+        frames = [{'render_ticks': wall, 'position_sample_ticks': tick,
+                   'render_position': [0, height, 0]}
+                  for wall, tick, height in [(1, 20, 64), (1.4, 20.25, 64.125),
+                     (2, 20.25, 64.125), (2.1, 21, 64.5), (3.7, 22, 64.5),
+                     (4.1, 22.5, 64.25), (6, 23, 64), (7, 1, 16)]]
+        self.assertEqual(self.observe('q.vertical_speed', frames), [0, 10, 10, 10, 0, -10, -10, 0])
+
     def test_scene_and_item_queries_follow_current_input(self):
         entity = {'player_level': 31, 'position': [1, 2, 3], 'camera_position': [4, 6, 3],
                   'camera_rotation': [-12, 23], 'hit_target_id': 'minecraft:pig', 'hit_target_type': 'entity',

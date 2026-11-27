@@ -17,6 +17,7 @@
 #include "mc/deps/minecraft_renderer/renderer/BedrockTextureData.h"
 #include "mc/deps/json/Value.h"
 #include <algorithm>
+#include <bit>
 
 ExpressionNode::ExpressionNode(ExpressionNode const& source) : mImpl(std::in_place_type<float>, 0.0f) {
     if (auto constant = std::get_if<float>(&*source.mImpl)) mImpl->emplace<float>(*constant);
@@ -131,9 +132,16 @@ struct AttachableDraw {
 };
 thread_local AttachableDraw* drawingGrip = nullptr;
 }
-void bindAttachableParent(RenderParams& params, AttachableSlotIndex slot, ItemStack const& item, Actor const& actor) {
+unsigned defaultAttachableGrip(Actor const& actor, AttachableSlotIndex slot, unsigned mask) {
+    // Native setup can be re-entered while a numbered copy is being drawn.
+    if (drawingGrip && drawingGrip->actor == &actor && drawingGrip->slot == slot) return drawingGrip->copy;
+    if (!mask || (mask & 1u)) return 0;
+    return 1u + static_cast<unsigned>(std::countr_zero(mask));
+}
+void bindAttachableParent(RenderParams& params, AttachableSlotIndex slot, ItemStack const& item, Actor const& actor,
+    unsigned primaryCopy) {
     auto* active = drawingGrip && drawingGrip->actor == &actor && drawingGrip->slot == slot ? drawingGrip : nullptr;
-    auto copy = active ? active->copy : 0u;
+    auto copy = active ? active->copy : primaryCopy;
     bool hand = slot == AttachableSlotIndex::CarriedItem || slot == AttachableSlotIndex::OffhandItem;
     bool elytra = (slot == AttachableSlotIndex::Torso || slot == AttachableSlotIndex::Body)
         && !FirstPersonRenderScope::isActive() && item.mItem && item.mItem->mFullName->getString() == "minecraft:elytra";

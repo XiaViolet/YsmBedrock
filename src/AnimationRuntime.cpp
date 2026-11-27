@@ -511,6 +511,7 @@ static EntityQueryInput entityInput(Player const& player, float frameAlpha,
 
     auto partialTick = std::isfinite(frameAlpha) ? std::clamp(static_cast<double>(frameAlpha), 0.0, 1.0) : 0;
     input.renderTicks = modelTime * 20;
+    input.positionSampleTicks = static_cast<double>(player.mTickCount) + partialTick;
     auto nativePosition = player.getPosition(), interpolated = player.getInterpolatedPosition(static_cast<float>(partialTick));
     input.renderPosition = {feet.x + (interpolated.x - nativePosition.x), feet.y + (interpolated.y - nativePosition.y),
         feet.z + (interpolated.z - nativePosition.z)};

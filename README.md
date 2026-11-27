@@ -15,7 +15,7 @@ YsmBedrock is an unofficial Windows client port of [Yes Steve Model](https://git
 ### Requirements
 
 - Windows x64 and Minecraft Bedrock Edition **1.26.60.05**.
-- [LeviLamina Client 26.60.9](https://github.com/LiteLDev/LeviLamina/releases/tag/v26.60.9) is used for builds. The **0.29.44** preview installers support Client 26.60.7, 26.60.8, and 26.60.9.
+- [LeviLamina Client 26.60.9](https://github.com/LiteLDev/LeviLamina/releases/tag/v26.60.9) is used for builds. The **0.29.45** preview installers support Client 26.60.7, 26.60.8, and 26.60.9.
 
 ### Features
 
@@ -27,15 +27,15 @@ YsmBedrock is an unofficial Windows client port of [Yes Steve Model](https://git
 
 ### Installation and usage
 
-The current public preview is [0.29.44](https://github.com/XiaViolet/YsmBedrock/releases/tag/v0.29.44). It includes the [first-person shadow fix for Arke](docs/0.29.44-Arke投影.md).
+The current public preview is [0.29.45](https://github.com/XiaViolet/YsmBedrock/releases/tag/v0.29.45). See the [flight, emote, equipment and Arke verification notes](docs/0.29.45.md).
 
 1. Install LeviLamina Client in the matching Minecraft instance, then exit the game before importing the mod.
 2. In your launcher's **Mod Management → LeviLamina → Import Mod**, select the package for your launcher.
 
    | Launcher | Package |
    | --- | --- |
-   | LeviLauncher | [Download `.mcmod`](https://github.com/XiaViolet/YsmBedrock/releases/download/v0.29.44/YsmBedrock-0.29.44.mcmod) |
-   | BedrockBoot | [Download `.zip`](https://github.com/XiaViolet/YsmBedrock/releases/download/v0.29.44/YsmBedrock-0.29.44-BedrockBoot.zip) |
+   | LeviLauncher | [Download `.mcmod`](https://github.com/XiaViolet/YsmBedrock/releases/download/v0.29.45/YsmBedrock-0.29.45.mcmod) |
+   | BedrockBoot | [Download `.zip`](https://github.com/XiaViolet/YsmBedrock/releases/download/v0.29.45/YsmBedrock-0.29.45-BedrockBoot.zip) |
 
 3. Enter a world, press `Alt+Y` to open the model library, and select **Equip Model** after choosing a model.
 4. Press `Z` to open the emote wheel.
@@ -70,7 +70,7 @@ YsmBedrock 是 [Yes Steve Model](https://github.com/YesSteveModel/YesSteveModel)
 ### 环境要求
 
 - Windows x64 和 Minecraft 基岩版 **1.26.60.05**。
-- 项目使用 [LeviLamina 客户端 26.60.9](https://github.com/LiteLDev/LeviLamina/releases/tag/v26.60.9) 构建。**0.29.44** 预览版安装包支持客户端 26.60.7、26.60.8 和 26.60.9。
+- 项目使用 [LeviLamina 客户端 26.60.9](https://github.com/LiteLDev/LeviLamina/releases/tag/v26.60.9) 构建。**0.29.45** 预览版安装包支持客户端 26.60.7、26.60.8 和 26.60.9。
 
 ### 主要功能
 
@@ -82,15 +82,15 @@ YsmBedrock 是 [Yes Steve Model](https://github.com/YesSteveModel/YesSteveModel)
 
 ### 安装与使用
 
-当前公开预览版为 [0.29.44](https://github.com/XiaViolet/YsmBedrock/releases/tag/v0.29.44)，包含 [Arke 第一人称投影修复](docs/0.29.44-Arke投影.md)。
+当前公开预览版为 [0.29.45](https://github.com/XiaViolet/YsmBedrock/releases/tag/v0.29.45)，详见[飞行、人偶、装备和 Arke 实测记录](docs/0.29.45.md)。
 
 1. 在对应的 Minecraft 实例中安装 LeviLamina 客户端版，退出游戏后再导入模组。
 2. 在启动器的「模组管理 → LeviLamina → 导入模组」选择对应安装包。
 
    | 启动器 | 安装包 |
    | --- | --- |
-   | LeviLauncher | [下载 `.mcmod`](https://github.com/XiaViolet/YsmBedrock/releases/download/v0.29.44/YsmBedrock-0.29.44.mcmod) |
-   | BedrockBoot | [下载 `.zip`](https://github.com/XiaViolet/YsmBedrock/releases/download/v0.29.44/YsmBedrock-0.29.44-BedrockBoot.zip) |
+   | LeviLauncher | [下载 `.mcmod`](https://github.com/XiaViolet/YsmBedrock/releases/download/v0.29.45/YsmBedrock-0.29.45.mcmod) |
+   | BedrockBoot | [下载 `.zip`](https://github.com/XiaViolet/YsmBedrock/releases/download/v0.29.45/YsmBedrock-0.29.45-BedrockBoot.zip) |
 
 3. 进入世界后按 `Alt+Y` 打开模型库，选中模型后点「穿戴此模型」。
 4. 按 `Z` 打开动作转盘。

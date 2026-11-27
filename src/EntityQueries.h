@@ -14,6 +14,8 @@ MolangValue blockQueryResult(std::string_view blockId, std::span<MolangValue con
 struct EntityQueryInput {
     std::array<double, 3> position{};
     std::optional<std::array<double, 3>> renderPosition;
+    // The simulation time used to interpolate renderPosition, in ticks.
+    std::optional<double> positionSampleTicks;
     std::optional<std::array<double, 3>> cameraPosition;
     std::array<double, 2> cameraRotation{};
     std::string hitTargetId, hitTargetType, biomeId;

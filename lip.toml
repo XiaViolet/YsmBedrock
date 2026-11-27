@@ -1,6 +1,6 @@
 format = 4
 id = "github.com/XiaViolet/YsmBedrock"
-version = "0.29.44"
+version = "0.29.45"
 
 [info]
 name = "YsmBedrock"

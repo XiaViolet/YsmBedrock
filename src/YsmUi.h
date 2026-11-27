@@ -82,7 +82,7 @@ private:
     std::string focusId;
     std::deque<UiCommand> commands;
     std::vector<std::pair<std::string, std::size_t>> categories{{"", 0}};
-    std::string formButton, search, previewClip;
+    std::string formButton, formAction, search, previewClip;
     bool searchFocused = false, favoritesOnly = false;
     std::size_t listPage = 0, texturePage = 0, formPage = 0, infoPage = 0, previewPage = 0, radioPage = 0;
     std::size_t playerPage = 0;
@@ -101,6 +101,7 @@ private:
     std::string local(std::string const& key, std::string fallback) const;
     void command(std::string kind, std::string key = {}, double value = 0, int label = -1);
     void activate(std::string const& id);
+    void editWheel(std::size_t slot);
     void chooseWheel(std::size_t slot);
     void back();
     void setRange(Range const& range, double value);
